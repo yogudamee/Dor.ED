@@ -1,0 +1,6 @@
+{
+  "name": "EngiDraft 3D — 工程制图三视图智能推导与三维重建系统",
+  "description": "专为高校《工程制图》课程打造的专业级四视窗 CAD 辅助推导、欠约束多解诊断与交互式三维重建桌面级系统。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

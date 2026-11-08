@@ -1,0 +1,14 @@
+{
+  "appId": "edu.cad.dored3d",
+  "appName": "Dor.ED 3D",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true
+  }
+}

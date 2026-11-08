@@ -1,11 +1,145 @@
-<div align="center">
+# Dor.ED — 工程制图三视图智能推导与三维 CSG 重建系统
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+**Dor.ED** 是一款面向机械工程制图、画法几何教学与三维空间思维训练的专业级 CAD 系统。软件集成了 **2D 参数化正交三视图绘图工作台**、**纯离线解析式 SDF（有向距离场）三维布尔重建引擎**、**26 邻域表面真实性消隐投影器** 以及 **跨视图拓扑重投影自动诊断修复引擎**，支持从任意两个已知正交视图自动推导出第三个视图与真实三维实体，并支持一键打包为 **Windows 桌面端 (`.exe`)** 与 **Android 移动端 (`.apk`)**。
 
-  <h1>Built with AI Studio</h2>
+---
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+## ✨ 核心功能亮点
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+### 1. 解析式三维 CSG 布尔重建与第三视图自动推导
+- **多原语智能识别**：支持从二维三视图自动识别并重建以下三维基本体与复合体：
+  - **基础柱体/盒体**：长方体 (`box`)、正交三轴圆柱/通孔/盲孔 (`cylinder_x / y / z`)、任意非矩形多边形带圆弧拉伸体 (`prism`)
+  - **曲面与锥台原语**：球体 (`sphere`)、平底半球体 (`hemisphere`)、正交圆锥与圆台 (`cone_x / y / z`)、不规则多边形/菱形底面棱锥 (`pyramid`)
+  - **空间薄片与多层组合体**：非闭合空间平面薄片 (`plane_sheet`)、同轴多层堆叠组合体（如圆台/半球叠加于方形基座）、雙斜角多边形交集 (`intersect`)
+- **精确解析 SDF 与自适应球体追踪消隐 (HLR)**：
+  - 内置 26 邻域表面真实性判定 (`isPointOnRealCSGSurface`)，彻底消除斜面、锥面及棱锥底边在正交轴向上的探测死角。
+  - 自动计算平面切球体、平面切圆锥、圆柱穿球体/圆柱正交相贯线，并精确区分可见轮廓线（**粗实线**）、不可见内部孔槽轮廓（**细虚线**）与回转轴线（**细点画线**）。
 
-</div>
+### 2. 跨视图拓扑诊断与一键修复 (`Diagnose & Auto-Fix`)
+- **双向重投影比对**：将重建出的 3D CSG 实体逆向投射回三个正交视图，与用户手绘视图进行像素级/区间级双向比对。
+- **三视图投影规律校验**：自动检测「长对正 ($\Delta X$)」、「高平齐 ($\Delta Z$)」、「宽相等 ($\Delta Y$)」对齐偏差、漏画相贯线/虚线、多余极值台階线及虚实线画反等错误，并提供**单条修复**与**全部一键修复**。
+
+### 3. 专业级 2D CAD 交互体验
+- **动态尺寸与捕捉浮窗 (Dynamic HUD)**：绘图时实时跟随光标显示长度与角度 (`L=... ∠...°`)、矩形宽高 (`W×H`)、圆直径/半径 (`Ø / R`) 及圆弧张角 (`Δ...°`)。
+- **全功能对象捕捉 (OSNAP)**：支持网格 (`Grid`)、端点 (`END`)、中点 (`MID`)、圆心 (`CEN`)、象限点 (`QUAD`)、真实几何交点 (`INT`) 及跨视图实时对齐射线 (`X / Y / Z`)。
+- **实时自动推导 (`Auto-Derive`)**：开启后，在任意两个视图落笔完成轮廓即可实时同步更新 3D 模型与第三视图。
+
+### 4. 手机 Android 专属触控操作模式 (`Mobile Touch Mode`)
+- **自适应/一键切换触控布局**：顶栏支持一键切换 `📱 触控模式` 与 `💻 桌面模式`（移动端屏幕自动启用）。
+- **单视图全屏切换栏**：针对手机屏幕优化，顶部提供 `[主视图 (X-Z)]`、`[俯视图 (X-Y)]`、`[左视图 (Y-Z)]`、`[3D 实体]`、`[四视图同屏]` 快速切换标签，以及触控专属 `[↶ 撤销]` / `[↷ 重做]` 按钮。
+- **双指捏合缩放与平移**：2D 画布原生支持双指捏合无级缩放 (`Pinch-to-Zoom`) 与双指拖拽平移，单指精准绘图与拾取。
+- **悬浮触控编辑栏**：绘图或选中图元时，画布底部自动弹出 `[✓ 结束线段]`、`[复制]`、`[粘贴]`、`[1:实 / 2:虚 / 3:点]`、`[删除]` 悬浮按钮，无需物理键盘或鼠标右键即可完成全部专业 CAD 操作。
+
+---
+
+## ⌨️ 键盘快捷键一览
+
+| 快捷键 | 功能说明 | 备注 |
+| :--- | :--- | :--- |
+| **`1`** | 切换为 **粗实线** (`thick_solid`) | 若当前已选中图元，直接将选中图元批量改为粗实线 |
+| **`2`** | 切换为 **细虚线** (`thin_dashed`) | 若当前已选中图元，直接将选中图元批量改为细虚线 |
+| **`3`** | 切换为 **细点画线** (`center_dot_dash`) | 若当前已选中图元，直接将选中图元批量改为细点画线 |
+| **`4`** | 切换为 **辅助线** (`construction`) | 若当前已选中图元，直接将选中图元批量改为辅助线 |
+| **`Ctrl + C`** | **复制**当前视图选中的图元 | 支持同视图阵列粘贴或跨视图粘贴 |
+| **`Ctrl + V`** | **粘贴**剪贴板中的图元 | 自动按网格间距偏移并保持选中状态，方便直接拖拽定位 |
+| **`Ctrl + A`** | **全选**当前激活视图的所有图元 | 自动切换至选择模式 |
+| **`Ctrl + Z` / `Ctrl + Y`** | **撤销** / **重做** | 支持最多 100 步历史记录 |
+| **`Delete` / `Backspace`** | **删除**当前选中的图元 | — |
+| **`Enter` / `Space`** | **结束**当前连续折线段绘制 | 等效于在直线模式下单击鼠标右键 |
+| **`F`** 或 **双击中键** | **重置视图缩放与平移 (100%)** | 恢复默认视角与居中偏移 |
+| **`F8`** | 开启 / 关闭 **正交锁定 (Ortho)** | 按住 **`Shift`** 键支持 **45° 倍数极轴锁定** |
+| **`V`** | 选择工具 (`Select`) | 支持夹点 (`Grip`) 拉伸、整体平移、蓝框窗口选与绿框交叉选 |
+| **`L`** | 直线工具 (`Line`) | 支持连续折线绘制 |
+| **`R`** | 矩形工具 (`Rect`) | 对角两点绘矩形 |
+| **`P`** | 正多边形工具 (`Polygon`) | 可在设置中调整边数 (3~12) |
+| **`C`** | 圆工具 (`Circle`) | 圆心与半径绘圆 |
+| **`A`** | 圆弧工具 (`Arc`) | 圆心、起点角度、终点角度逆时针绘弧 |
+| **`G`** | 几何切线工具 (`Tangent`) | 自动计算并吸附圆周精确几何切点 |
+| **`T`** | 修剪工具 (`Trim`) | 在交点处剪除多余线段或将圆裁剪为圆弧 |
+| **`E`** | 延伸工具 (`Extend`) | 将线段或圆弧延伸至前方最近边界交点 |
+| **`O`** | 偏移工具 (`Offset`) | 生成平行线或同心圆/圆弧 |
+| **`D`** | 擦除工具 (`Erase`) | 点击直接删除单个图元 |
+
+---
+
+## 📁 项目目录结构
+
+```text
+├── src/
+│   ├── components/
+│   │   ├── CadViewport2D.tsx     # 2D 正交视图画布（OSNAP、动态 HUD、复制粘贴、双指触控缩放）
+│   │   ├── Viewport3D.tsx        # 3D 交互式视窗（Three.js + three-bvh-csg 实时布尔运算与多材质渲染）
+│   │   ├── SettingsModal.tsx     # 系统设置、教学手册与 Windows (.exe) / Android (.apk) 打包配置
+│   │   └── FileExplorerPanel.tsx # 工程文件管理面板（支持挂载本地磁盘目录）
+│   ├── utils/
+│   │   ├── csgPrimitives.ts      # 底层 3D 解析 SDF 几何库、26 邻域表面判定、相贯采样与消隐裁剪器
+│   │   ├── geometryKernel.ts     # 上层 2D 闭合环提取、跨视图特征配对推导、双向重投影诊断与修复
+│   │   ├── exporters.ts          # 标准 CAD (.DXF)、矢量图 (.SVG)、三维网格 (.STL) 与项目 (.JSON) 导出
+│   │   └── i18n.ts               # 多语言字典（简体中文 / 繁體中文 / English）
+│   ├── data/
+│   │   └── presets.ts            # 经典画法几何与机械制图题库案例
+│   ├── types/
+│   │   └── cad.ts                # 核心 2D 图元、3D CSG 原语与诊断数据结构定义
+│   └── App.tsx                   # 主工作台布局（桌面四视图 & 手机 Android 触控单视图/多视图切换）
+├── electron/
+│   └── main.cjs                  # Electron 桌面端主进程入口
+├── capacitor.config.json         # Capacitor Android 移动端打包配置
+├── build-android-apk.bat         # Android (.apk) 一键打包脚本
+└── package.json                  # 项目依赖与构建脚本
+```
+
+---
+
+## 🚀 本地开发与运行
+
+### 环境要求
+- **Node.js** >= 18.0.0
+- **npm** >= 9.0.0
+
+### 启动开发服务器
+```bash
+# 1. 安装依赖（推荐使用国内阿里云镜像加速）
+npm install --registry=https://registry.npmmirror.com/
+
+# 2. 启动本地开发服务器（默认监听 http://localhost:3000）
+npm run dev
+
+# 3. 生产环境前端构建与类型检查
+npm run build
+npm run lint
+```
+
+---
+
+## 📦 跨平台打包指南
+
+### 一、打包 Windows 桌面端 (`.exe`)
+项目内置 Electron + `electron-builder` 打包配置，支持同时生成 **免安装便携版 (`Portable .exe`)** 与 **安装向导版 (`NSIS .exe`)**：
+
+```bash
+# 设置国内镜像并构建 Windows 64 位 .exe
+npm install -D electron electron-builder --registry=https://registry.npmmirror.com/
+npm run build:exe
+```
+> 您也可以直接在软件右上角点击 **【设置】->【打包配置】->【下载 Windows (.exe) 构建脚本 (.bat)】**，双击运行即可完成构建。构建产物位于 `release/` 目录。
+
+### 二、打包 Android 手机端 (`.apk`)
+项目已针对 Android 手机端适配了专属触控操作模式（双指捏合缩放平移、单视图全屏切换栏、底部悬浮复制/粘贴/完成线段操作栏），并配置了 `capacitor.config.json` 与一键构建脚本 `build-android-apk.bat`：
+
+1. 确保本地已安装 **JDK 17+** 与 **Android SDK**（或 Android Studio）。
+2. 在项目根目录直接双击运行 `build-android-apk.bat`，或执行以下命令：
+```bash
+npm install @capacitor/core @capacitor/cli @capacitor/android --registry=https://registry.npmmirror.com/
+npm run build
+npx cap add android
+npx cap sync android
+cd android && ./gradlew assembleDebug
+```
+3. 构建完成后，生成的安装包位于：
+   `android/app/build/outputs/apk/debug/app-debug.apk`
+   将该 `.apk` 文件发送至 Android 手机安装后，应用会自动进入 **手机 Android 触控模式**。
+
+---
+
+## 📄 开源协议
+本项目采用 MIT License 开源，欢迎用于工程制图教学、CAD 算法研究与二次开发。
