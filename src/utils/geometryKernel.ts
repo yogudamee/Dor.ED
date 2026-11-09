@@ -4,6 +4,8 @@
 import {
   polygonArea2D,
   pointInPolygon2D,
+  sampleArcPoints,
+  chainSegmentsIntoDensePolygon,
   curvedLoopSignedDist2D,
   evalPrimitiveSDF,
   evalCSGSDF,
@@ -18,6 +20,8 @@ import {
 export {
   polygonArea2D,
   pointInPolygon2D,
+  sampleArcPoints,
+  chainSegmentsIntoDensePolygon,
   curvedLoopSignedDist2D,
   evalPrimitiveSDF,
   evalCSGSDF,
@@ -28,6 +32,44 @@ export {
   clipAndMergeLinearSegments2D,
   projectCSGSolidToView,
 };
+
+export {
+  subdivideAndSnapCurves,
+  buildPlanarArrangementDCEL,
+  extractCompositeRegionsInView,
+  stitchVirtualCirclesInView,
+  classifyRegionProfile,
+  buildContainmentHierarchyInView,
+  parseDashedFeaturesInView,
+  primitiveToGeneralizedLoft,
+  evalGeneralizedLoftSDF,
+  extractGeneralizedLoftEdgesAndSilhouettes,
+  buildGeneralizedLoftManifoldPositions,
+  evalLateralSurfaceImplicit,
+  evalPrimitiveSurfaceGradient3D,
+  evalBoundedPrimitiveSDF,
+  evaluateCSGTreeSDF,
+  isPointOnKnifeEdgeOrThinWall,
+  pairTaperedHolesAcrossViews,
+  buildNestedCircleCandidateVariants,
+  evaluateViewBackProjectionMetrics,
+  verifyAndSelfHealSolidDerivation,
+  extractSlantedPlanesFromPrimitive,
+  computePlaneQuadricSectionSegments,
+  projectPointOntoSSIManifold,
+  tracePairwiseCurvedSSI,
+  extractAllCandidate3DEdges,
+  projectPoint3DTo2D,
+  classifySegment3DVisibility,
+  fitAndPrioritize2DProjection,
+  cleanMicroSolidFragmentsInDerivedEntities,
+  computeViewSpanBounds,
+  checkThreeEqualAlignment,
+  checkTopologicalClosure,
+  checkMissingCenterlinesInView,
+  synthesizeCenterlinesForView,
+} from "../kernel";
+import { cleanMicroSolidFragmentsInDerivedEntities } from "../kernel";
 
 import {
   CadArcEntity,
@@ -1547,67 +1589,15 @@ export function getSegmentsExactBounds(segments) {
 	};
 }
 export function buildDensePolygonFromSegments(segments) {
-	const polyPts: Point2D[] = [];
-	const N_ARC_PTS = 48;
-	let currPt: Point2D | null = null;
-	for (const seg of segments) {
-		if (seg.kind === "arc" && seg.center && seg.radius !== void 0 && seg.startAngle !== void 0 && seg.endAngle !== void 0) {
-			let span = normalizeAngle(seg.endAngle - seg.startAngle);
-			if (span < 1e-4) span = Math.PI * 2;
-			const sampled: Point2D[] = [];
-			for (let k = 0; k <= N_ARC_PTS; k++) {
-				const frac = k / N_ARC_PTS;
-				const ang = seg.startAngle + frac * span;
-				sampled.push({
-					u: seg.center.u + seg.radius * Math.cos(ang),
-					v: seg.center.v + seg.radius * Math.sin(ang)
-				});
-			}
-			const arcStart = sampled[0];
-			const arcEnd = sampled[sampled.length - 1];
-			const refPt = currPt || seg.p1 || arcStart;
-			if (dist2D(arcEnd, refPt) + 1e-3 < dist2D(arcStart, refPt)) {
-				sampled.reverse();
-				seg.ccw = false;
-				seg.p1 = arcEnd;
-				seg.p2 = arcStart;
-			} else {
-				seg.ccw = true;
-				seg.p1 = arcStart;
-				seg.p2 = arcEnd;
-			}
-			for (const pt of sampled) {
-				if (polyPts.length === 0 || dist2D(polyPts[polyPts.length - 1], pt) > 0.05) {
-					polyPts.push(pt);
-				}
-			}
-			currPt = polyPts[polyPts.length - 1] || null;
-		} else if (seg.p1 && seg.p2) {
-			if (currPt && dist2D(seg.p2, currPt) + 1e-3 < dist2D(seg.p1, currPt)) {
-				const tmp = seg.p1;
-				seg.p1 = seg.p2;
-				seg.p2 = tmp;
-			}
-			if (polyPts.length === 0 || dist2D(polyPts[polyPts.length - 1], seg.p1) > 0.05) {
-				polyPts.push(seg.p1);
-			}
-			if (dist2D(polyPts[polyPts.length - 1], seg.p2) > 0.05) {
-				polyPts.push(seg.p2);
-			}
-			currPt = polyPts[polyPts.length - 1] || null;
-		}
-	}
-	if (polyPts.length >= 2 && dist2D(polyPts[0], polyPts[polyPts.length - 1]) <= 0.1) {
-		polyPts.pop();
-	}
-	return polyPts;
+	if (!Array.isArray(segments) || segments.length === 0) return [];
+	return chainSegmentsIntoDensePolygon(segments, [], 48);
 }
 /**
 * Stage 1: Entity Normalization & "Virtual Circle" Automatic Stitching
 * - Stitches concentric equal-radius arcs (center dist <= 1.5mm, |dR| <= 1.5mm, combined coverage >= 240 deg)
 *   into a complete VirtualCircle(uc, vc, R).
-* - Promotes single outer-contour major arcs (thick_solid, span > 195 deg, without a direct closing flat chord)
-*   into a VirtualCircle(uc, vc, R).
+* - Promotes single outer-contour major arcs (thick_solid, span > 195 deg, without a direct closing flat chord
+*   and NOT chained at both ends to straight wall lines) into a VirtualCircle(uc, vc, R).
 * - Protects any thin_dashed arc participating in a VirtualCircle by recording its ID in outProtectedDashedArcIds
 *   and outStitchedArcIds so it is never misinterpreted as a subtracted hole.
 */
@@ -1623,7 +1613,9 @@ export function extractNormalizedCirclesInView(
 		sourceIds: [c.id]
 	}));
 	const viewArcs = viewEnts.filter((e) => e.type === "arc" && (e.lineType === "thick_solid" || e.lineType === "thin_dashed"));
-	const solidLines = viewEnts.filter((e) => e.type === "line" && e.lineType === "thick_solid");
+	const solidLines = viewEnts
+		.filter((e) => (e.type === "line" || e.type === "polygon") && e.lineType === "thick_solid")
+		.flatMap((e) => expandEntityToSegments(e));
 
 	for (const arc of viewArcs) {
 		if (arc.lineType === "thin_dashed") {
@@ -1670,7 +1662,7 @@ export function extractNormalizedCirclesInView(
 		return count;
 	};
 
-	const hasDirectClosingFlatChord = (arc: any): boolean => {
+	const isArcChainedToSolidLines = (arc: any): boolean => {
 		const pStart = {
 			u: arc.center.u + arc.radius * Math.cos(arc.startAngle),
 			v: arc.center.v + arc.radius * Math.sin(arc.startAngle)
@@ -1680,11 +1672,13 @@ export function extractNormalizedCirclesInView(
 			v: arc.center.v + arc.radius * Math.sin(arc.endAngle)
 		};
 		if (dist2D(pStart, pEnd) <= 2.0) return false;
-		return solidLines.some(
-			(ln) =>
-				(dist2D(ln.p1, pStart) <= 3.5 && dist2D(ln.p2, pEnd) <= 3.5) ||
-				(dist2D(ln.p1, pEnd) <= 3.5 && dist2D(ln.p2, pStart) <= 3.5)
+		const startTouchesLine = solidLines.some(
+			(ln) => dist2D(ln.p1, pStart) <= 3.5 || dist2D(ln.p2, pStart) <= 3.5
 		);
+		const endTouchesLine = solidLines.some(
+			(ln) => dist2D(ln.p1, pEnd) <= 3.5 || dist2D(ln.p2, pEnd) <= 3.5
+		);
+		return startTouchesLine && endTouchesLine;
 	};
 
 	const virtualCircles: any[] = [];
@@ -1709,7 +1703,7 @@ export function extractNormalizedCirclesInView(
 			g.length === 1 &&
 			g[0].lineType === "thick_solid" &&
 			coverageDeg > 195 &&
-			!hasDirectClosingFlatChord(g[0]);
+			!isArcChainedToSolidLines(g[0]);
 
 		if (isStitchedMultiArc || isTrimmedMajorArc) {
 			const hasSolid = g.some((a) => a.lineType === "thick_solid");
@@ -1738,6 +1732,8 @@ export function extractNormalizedCirclesInView(
 * Stage 2 Helper: Decompose composite outer loops (such as a triangle/trapezoid/rectangle
 * stepping inward at W = w_split to join a protruding semicircle arc, or split by an internal dividing line)
 * into independent elementary sub-loops.
+* CRITICAL IRON RULE: Never split a smooth tangent Arch (where arc chord width == body width and no internal
+* dividing line is drawn at w_split) into separate loops without keeping the undivided outer Arch contour!
 */
 export function decomposeCompositeLoopsInView(loops: any[], viewSolidLines: any[] = []): any[] {
 	const result: any[] = [];
@@ -1768,16 +1764,37 @@ export function decomposeCompositeLoopsInView(loops: any[], viewSolidLines: any[
 
 		if (arcSegs.length === 1 && lineSegs.length >= 2) {
 			const arcSeg = arcSegs[0];
-			const dv = Math.abs(arcSeg.p1.v - arcSeg.p2.v);
-			const du = Math.abs(arcSeg.p1.u - arcSeg.p2.u);
+			const arcPts = sampleArcPoints(
+				{
+					center: arcSeg.center,
+					radius: arcSeg.radius,
+					startAngle: arcSeg.startAngle ?? 0,
+					endAngle: arcSeg.endAngle ?? Math.PI * 2
+				},
+				16
+			);
+			const arcStartPt = arcPts[0];
+			const arcEndPt = arcPts[arcPts.length - 1];
+			const dv = Math.abs(arcStartPt.v - arcEndPt.v);
+			const du = Math.abs(arcStartPt.u - arcEndPt.u);
 
 			if (dv <= 3.0 && du > 3.0) {
-				const rawV = 0.5 * (arcSeg.p1.v + arcSeg.p2.v);
+				const rawV = 0.5 * (arcStartPt.v + arcEndPt.v);
 				const vSplit = Math.abs(rawV - arcSeg.center.v) <= 3.5 ? arcSeg.center.v : rawV;
 				const hasBodyBelow = lp.vMin < vSplit - 2.5 && lp.vMax > vSplit + 2.5;
-				if (hasBodyBelow) {
-					const pArc1 = { u: arcSeg.p1.u, v: vSplit };
-					const pArc2 = { u: arcSeg.p2.u, v: vSplit };
+				const hasExplicitHorizSplitLine = viewSolidLines.some(
+					(ln: any) =>
+						Math.abs(ln.p1.v - vSplit) <= 2.5 &&
+						Math.abs(ln.p2.v - vSplit) <= 2.5 &&
+						Math.abs(ln.p2.u - ln.p1.u) >= du - 3.0
+				);
+				const hasStepShoulder = (lp.uMax - lp.uMin) - du > 3.5;
+				const hasSlantedWalls = lineSegs.some(
+					(s: any) => Math.abs(s.p2.v - s.p1.v) > 4.0 && Math.abs(s.p2.u - s.p1.u) > 2.5
+				);
+				if (hasBodyBelow && (hasExplicitHorizSplitLine || hasStepShoulder || hasSlantedWalls)) {
+					const pArc1 = { u: arcStartPt.u, v: vSplit };
+					const pArc2 = { u: arcEndPt.u, v: vSplit };
 					const semiLoop = buildLoopFromSegs(
 						[
 							{ ...arcSeg, p1: pArc1, p2: pArc2 },
@@ -1835,18 +1852,30 @@ export function decomposeCompositeLoopsInView(loops: any[], viewSolidLines: any[
 						}
 						const bodyLoop = buildLoopFromSegs(orderedBody, lp.lineType);
 						if (bodyLoop) {
-							result.push(bodyLoop, semiLoop);
+							(bodyLoop as any).isDecomposedSubLoop = true;
+							(semiLoop as any).isDecomposedSubLoop = true;
+							result.push(lp, bodyLoop, semiLoop);
 							continue;
 						}
 					}
 				}
 			} else if (du <= 3.0 && dv > 3.0) {
-				const rawU = 0.5 * (arcSeg.p1.u + arcSeg.p2.u);
+				const rawU = 0.5 * (arcStartPt.u + arcEndPt.u);
 				const uSplit = Math.abs(rawU - arcSeg.center.u) <= 3.5 ? arcSeg.center.u : rawU;
 				const hasBodySide = lp.uMin < uSplit - 2.5 && lp.uMax > uSplit + 2.5;
-				if (hasBodySide) {
-					const pArc1 = { u: uSplit, v: arcSeg.p1.v };
-					const pArc2 = { u: uSplit, v: arcSeg.p2.v };
+				const hasExplicitVertSplitLine = viewSolidLines.some(
+					(ln: any) =>
+						Math.abs(ln.p1.u - uSplit) <= 2.5 &&
+						Math.abs(ln.p2.u - uSplit) <= 2.5 &&
+						Math.abs(ln.p2.v - ln.p1.v) >= dv - 3.0
+				);
+				const hasStepShoulder = (lp.vMax - lp.vMin) - dv > 3.5;
+				const hasSlantedWalls = lineSegs.some(
+					(s: any) => Math.abs(s.p2.u - s.p1.u) > 4.0 && Math.abs(s.p2.v - s.p1.v) > 2.5
+				);
+				if (hasBodySide && (hasExplicitVertSplitLine || hasStepShoulder || hasSlantedWalls)) {
+					const pArc1 = { u: uSplit, v: arcStartPt.v };
+					const pArc2 = { u: uSplit, v: arcEndPt.v };
 					const semiLoop = buildLoopFromSegs(
 						[
 							{ ...arcSeg, p1: pArc1, p2: pArc2 },
@@ -1904,7 +1933,9 @@ export function decomposeCompositeLoopsInView(loops: any[], viewSolidLines: any[
 						}
 						const bodyLoop = buildLoopFromSegs(orderedBody, lp.lineType);
 						if (bodyLoop) {
-							result.push(bodyLoop, semiLoop);
+							(bodyLoop as any).isDecomposedSubLoop = true;
+							(semiLoop as any).isDecomposedSubLoop = true;
+							result.push(lp, bodyLoop, semiLoop);
 							continue;
 						}
 					}
@@ -1915,8 +1946,8 @@ export function decomposeCompositeLoopsInView(loops: any[], viewSolidLines: any[
 		// Also check if a non-rectangular all-line loop has internal horizontal/vertical dividing lines or step-shoulders
 		const isSimpleAxisRect =
 			arcSegs.length === 0 &&
-			lineSegs.length === 4 &&
-			Math.abs(lp.area - (lp.uMax - lp.uMin) * (lp.vMax - lp.vMin)) <= 2.0;
+			Math.abs(lp.area - (lp.uMax - lp.uMin) * (lp.vMax - lp.vMin)) <=
+				Math.max(2.5, 0.02 * (lp.uMax - lp.uMin) * (lp.vMax - lp.vMin));
 		if (arcSegs.length === 0 && lineSegs.length >= 3 && !isSimpleAxisRect) {
 			const clipPolyByV = (pts: { u: number; v: number }[], vCut: number, keepGreater: boolean) => {
 				const out: { u: number; v: number }[] = [];
@@ -1976,8 +2007,8 @@ export function decomposeCompositeLoopsInView(loops: any[], viewSolidLines: any[
 					if (
 						vVal > lp.vMin + 2.5 &&
 						vVal < lp.vMax - 2.5 &&
-						Math.min(ln.p1.u, ln.p2.u) >= lp.uMin - 2.0 &&
-						Math.max(ln.p1.u, ln.p2.u) <= lp.uMax + 2.0
+						Math.min(ln.p1.u, ln.p2.u) <= lp.uMin + 2.5 &&
+						Math.max(ln.p1.u, ln.p2.u) >= lp.uMax - 2.5
 					) {
 						const alreadySubLoops = loops.filter(
 							(other) =>
@@ -2146,15 +2177,205 @@ export function extractClosedLoopsInView(
 	}
 	for (const lt of allowedLineTypes) {
 		const segEnts = viewEnts.filter((e) => e.lineType === lt && (e.type === "line" || e.type === "arc"));
+		const rawLines = segEnts.filter((e) => e.type === "line" && dist2D(e.p1, e.p2) >= .3) as CadLineEntity[];
+		const rawArcs = segEnts.filter((e) => e.type === "arc") as CadArcEntity[];
+		// 1. Merge colinear overlapping/connected straight lines to detect shared baseline chords
+		const mergedLines: { p1: Point2D; p2: Point2D; ids: string[] }[] = [];
+		for (const ln of rawLines) {
+			let merged = false;
+			for (const ml of mergedLines) {
+				const dxM = ml.p2.u - ml.p1.u;
+				const dyM = ml.p2.v - ml.p1.v;
+				const lenM = Math.hypot(dxM, dyM);
+				const dxL = ln.p2.u - ln.p1.u;
+				const dyL = ln.p2.v - ln.p1.v;
+				const lenL = Math.hypot(dxL, dyL);
+				if (lenM < .3 || lenL < .3) continue;
+				const cross = Math.abs(dxM * dyL - dyM * dxL) / (lenM * lenL);
+				if (cross <= 0.05) {
+					const d1 = pointToSegmentDist(ln.p1, ml.p1, ml.p2).dist;
+					const d2 = pointToSegmentDist(ln.p2, ml.p1, ml.p2).dist;
+					const d3 = pointToSegmentDist(ml.p1, ln.p1, ln.p2).dist;
+					const d4 = pointToSegmentDist(ml.p2, ln.p1, ln.p2).dist;
+					if (Math.min(d1, d2, d3, d4) <= 1.8) {
+						const ux = dxM / lenM;
+						const uy = dyM / lenM;
+						const pts = [ml.p1, ml.p2, ln.p1, ln.p2];
+						let minProj = Infinity, maxProj = -Infinity;
+						let pMin = ml.p1, pMax = ml.p2;
+						for (const pt of pts) {
+							const pr = (pt.u - ml.p1.u) * ux + (pt.v - ml.p1.v) * uy;
+							if (pr < minProj) { minProj = pr; pMin = pt; }
+							if (pr > maxProj) { maxProj = pr; pMax = pt; }
+						}
+						ml.p1 = pMin;
+						ml.p2 = pMax;
+						ml.ids.push(ln.id);
+						merged = true;
+						break;
+					}
+				}
+			}
+			if (!merged) {
+				mergedLines.push({ p1: { ...ln.p1 }, p2: { ...ln.p2 }, ids: [ln.id] });
+			}
+		}
+		// 2. Shared-Chord Semicircular/Curved Inner Loop Reconstruction
+		const consumedChordLineIds = new Set<string>();
+		const consumedSharedArcIds = new Set<string>();
+		for (const ml of mergedLines) {
+			const lenM = dist2D(ml.p1, ml.p2);
+			if (lenM < 2) continue;
+			const ux = (ml.p2.u - ml.p1.u) / lenM;
+			const uy = (ml.p2.v - ml.p1.v) / lenM;
+			const arcsOnChord: { arc: CadArcEntity; pStart: Point2D; pEnd: Point2D; t1: number; t2: number }[] = [];
+			for (const arc of rawArcs) {
+				const pStart = {
+					u: arc.center.u + arc.radius * Math.cos(arc.startAngle),
+					v: arc.center.v + arc.radius * Math.sin(arc.startAngle)
+				};
+				const pEnd = {
+					u: arc.center.u + arc.radius * Math.cos(arc.endAngle),
+					v: arc.center.v + arc.radius * Math.sin(arc.endAngle)
+				};
+				if (dist2D(pStart, pEnd) < 1.5) continue;
+				const dStart = pointToSegmentDist(pStart, ml.p1, ml.p2);
+				const dEnd = pointToSegmentDist(pEnd, ml.p1, ml.p2);
+				if (dStart.dist <= 2.5 && dEnd.dist <= 2.5) {
+					const t1 = ((pStart.u - ml.p1.u) * ux + (pStart.v - ml.p1.v) * uy) / lenM;
+					const t2 = ((pEnd.u - ml.p1.u) * ux + (pEnd.v - ml.p1.v) * uy) / lenM;
+					if (t1 >= -0.06 && t1 <= 1.06 && t2 >= -0.06 && t2 <= 1.06) {
+						arcsOnChord.push({ arc, pStart, pEnd, t1, t2 });
+					}
+				}
+			}
+			if (arcsOnChord.length === 0) continue;
+			// Check if the chord endpoints connect to any other non-colinear straight line segment
+			const hasNonColinearBranchAtEnd = (endPt: Point2D) => {
+				for (const otherLn of rawLines) {
+					if (ml.ids.includes(otherLn.id)) continue;
+					if (dist2D(otherLn.p1, endPt) <= 2.0 || dist2D(otherLn.p2, endPt) <= 2.0) {
+						const dxO = otherLn.p2.u - otherLn.p1.u;
+						const dyO = otherLn.p2.v - otherLn.p1.v;
+						const lenO = Math.hypot(dxO, dyO);
+						if (lenO > .5 && Math.abs(ux * dyO - uy * dxO) / lenO > 0.2) return true;
+					}
+				}
+				return false;
+			};
+			const branchAtP1 = hasNonColinearBranchAtEnd(ml.p1);
+			const branchAtP2 = hasNonColinearBranchAtEnd(ml.p2);
+			const isStandaloneChord = !branchAtP1 && !branchAtP2;
+			for (const item of arcsOnChord) {
+				const isInteriorTJunction = (item.t1 > 0.03 && item.t1 < 0.97) || (item.t2 > 0.03 && item.t2 < 0.97);
+				if (arcsOnChord.length >= 2 || isInteriorTJunction || isStandaloneChord) {
+					// If the chord connects to walls at its ends, only close interior T-junction arcs directly;
+					// if the chord is standalone (like concentric semicircles sharing a chord), close ALL arcs on it!
+					if (!isStandaloneChord && !isInteriorTJunction) continue;
+					let pS = { ...item.pStart };
+					let pE = { ...item.pEnd };
+					if (Math.abs(ml.p1.v - ml.p2.v) <= 3.0 && Math.abs(0.5 * (ml.p1.v + ml.p2.v) - item.arc.center.v) <= 3.5) {
+						const vFlat = item.arc.center.v;
+						pS = { u: pS.u, v: vFlat };
+						pE = { u: pE.u, v: vFlat };
+					} else if (Math.abs(ml.p1.u - ml.p2.u) <= 3.0 && Math.abs(0.5 * (ml.p1.u + ml.p2.u) - item.arc.center.u) <= 3.5) {
+						const uFlat = item.arc.center.u;
+						pS = { u: uFlat, v: pS.v };
+						pE = { u: uFlat, v: pE.v };
+					}
+					const cleanSegs = [
+						{
+							kind: "arc" as const,
+							p1: pS,
+							p2: pE,
+							center: item.arc.center,
+							radius: item.arc.radius,
+							startAngle: item.arc.startAngle,
+							endAngle: item.arc.endAngle,
+							ccw: true
+						},
+						{
+							kind: "line" as const,
+							p1: pE,
+							p2: pS
+						}
+					];
+					const polyPts = buildDensePolygonFromSegments(cleanSegs);
+					if (polyPts.length >= 3) {
+						const { uMin, uMax, vMin, vMax } = getSegmentsExactBounds(cleanSegs);
+						if (uMax - uMin > 1 && vMax - vMin > 1) {
+							usedArcIds.add(item.arc.id);
+							consumedSharedArcIds.add(item.arc.id);
+							loops.push({
+								points: polyPts,
+								segments: cleanSegs,
+								uMin,
+								uMax,
+								vMin,
+								vMax,
+								area: polygonArea2D(polyPts),
+								lineType: lt
+							});
+						}
+					}
+				}
+			}
+			if (isStandaloneChord && arcsOnChord.every((a) => consumedSharedArcIds.has(a.arc.id))) {
+				for (const id of ml.ids) consumedChordLineIds.add(id);
+			}
+		}
+		// 3. Planar Segment Splitting at T-Junctions for remaining straight lines and arcs
+		const allEndpoints: Point2D[] = [];
+		for (const e of segEnts) {
+			if (e.type === "line" && !consumedChordLineIds.has(e.id)) {
+				allEndpoints.push(e.p1, e.p2);
+			} else if (e.type === "arc" && !consumedSharedArcIds.has(e.id)) {
+				allEndpoints.push(
+					{
+						u: e.center.u + e.radius * Math.cos(e.startAngle),
+						v: e.center.v + e.radius * Math.sin(e.startAngle)
+					},
+					{
+						u: e.center.u + e.radius * Math.cos(e.endAngle),
+						v: e.center.v + e.radius * Math.sin(e.endAngle)
+					}
+				);
+			}
+		}
 		const rawSegs: any[] = [];
 		for (const e of segEnts) if (e.type === "line") {
-			if (dist2D(e.p1, e.p2) >= .3) rawSegs.push({
-				kind: "line",
-				p1: e.p1,
-				p2: e.p2,
-				entityId: e.id
-			});
+			if (consumedChordLineIds.has(e.id)) continue;
+			const len = dist2D(e.p1, e.p2);
+			if (len < .3) continue;
+			const ux = (e.p2.u - e.p1.u) / len;
+			const uy = (e.p2.v - e.p1.v) / len;
+			const splitTs = [0, 1];
+			for (const pt of allEndpoints) {
+				const d = pointToSegmentDist(pt, e.p1, e.p2);
+				if (d.dist <= 1.5) {
+					const t = ((pt.u - e.p1.u) * ux + (pt.v - e.p1.v) * uy) / len;
+					if (t > 0.02 && t < 0.98 && !splitTs.some((st) => Math.abs(st - t) <= 0.02)) {
+						splitTs.push(t);
+					}
+				}
+			}
+			splitTs.sort((a, b) => a - b);
+			for (let k = 0; k < splitTs.length - 1; k++) {
+				const tA = splitTs[k];
+				const tB = splitTs[k + 1];
+				const subP1 = { u: e.p1.u + tA * (e.p2.u - e.p1.u), v: e.p1.v + tA * (e.p2.v - e.p1.v) };
+				const subP2 = { u: e.p1.u + tB * (e.p2.u - e.p1.u), v: e.p1.v + tB * (e.p2.v - e.p1.v) };
+				if (dist2D(subP1, subP2) >= .3) {
+					rawSegs.push({
+						kind: "line",
+						p1: subP1,
+						p2: subP2,
+						entityId: e.id
+					});
+				}
+			}
 		} else if (e.type === "arc") {
+			if (consumedSharedArcIds.has(e.id)) continue;
 			const pStart = {
 				u: e.center.u + e.radius * Math.cos(e.startAngle),
 				v: e.center.v + e.radius * Math.sin(e.startAngle)
@@ -2361,7 +2582,6 @@ export function extractClosedLoopsInView(
 					if (d1.dist <= 3.5 && d2.dist <= 3.5 && Math.abs(d1.t - d2.t) > .05) {
 						const isProtrudingOutward = !pointInPolygon2D(pMid, lp.points);
 						if (isProtrudingOutward && arcEnt.lineType === "thick_solid") {
-							// Outward boss/semicircle attached to polygon edge: keep lp intact and create an independent semicircle loop!
 							let cP1 = { ...pStart };
 							let cP2 = { ...pEnd };
 							if (Math.abs(pStart.v - pEnd.v) <= 3.0) {
@@ -2393,7 +2613,7 @@ export function extractClosedLoopsInView(
 							const semiPts = buildDensePolygonFromSegments(semiSegs);
 							if (semiPts.length >= 3) {
 								const sb = getSegmentsExactBounds(semiSegs);
-								loops.push({
+								const semiLoopObj: any = {
 									points: semiPts,
 									segments: semiSegs,
 									uMin: sb.uMin,
@@ -2401,8 +2621,61 @@ export function extractClosedLoopsInView(
 									vMin: sb.vMin,
 									vMax: sb.vMax,
 									area: polygonArea2D(semiPts),
-									lineType: arcEnt.lineType
-								});
+									lineType: arcEnt.lineType,
+									isDecomposedSubLoop: true
+								};
+								(lp as any).isDecomposedSubLoop = true;
+								loops.push(semiLoopObj);
+
+								// Also build the unified outer silhouette loop (splicing the outward arc into lp)
+								const splicedOuterSegs: any[] = [];
+								for (const s2 of lp.segments) {
+									if (s2 === seg) {
+										if (d1.t <= d2.t) {
+											if (dist2D(seg.p1, pStart) > 0.5) splicedOuterSegs.push({ kind: "line", p1: seg.p1, p2: pStart });
+											splicedOuterSegs.push({
+												kind: "arc",
+												p1: pStart,
+												p2: pEnd,
+												center: arcEnt.center,
+												radius: arcEnt.radius,
+												startAngle: arcEnt.startAngle,
+												endAngle: arcEnt.endAngle,
+												ccw: true
+											});
+											if (dist2D(pEnd, seg.p2) > 0.5) splicedOuterSegs.push({ kind: "line", p1: pEnd, p2: seg.p2 });
+										} else {
+											if (dist2D(seg.p1, pEnd) > 0.5) splicedOuterSegs.push({ kind: "line", p1: seg.p1, p2: pEnd });
+											splicedOuterSegs.push({
+												kind: "arc",
+												p1: pEnd,
+												p2: pStart,
+												center: arcEnt.center,
+												radius: arcEnt.radius,
+												startAngle: arcEnt.startAngle,
+												endAngle: arcEnt.endAngle,
+												ccw: false
+											});
+											if (dist2D(pStart, seg.p2) > 0.5) splicedOuterSegs.push({ kind: "line", p1: pStart, p2: seg.p2 });
+										}
+									} else {
+										splicedOuterSegs.push(s2);
+									}
+								}
+								const outerPts = buildDensePolygonFromSegments(splicedOuterSegs);
+								if (outerPts.length >= 3) {
+									const ob = getSegmentsExactBounds(splicedOuterSegs);
+									loops.push({
+										points: outerPts,
+										segments: splicedOuterSegs,
+										uMin: ob.uMin,
+										uMax: ob.uMax,
+										vMin: ob.vMin,
+										vMax: ob.vMax,
+										area: polygonArea2D(outerPts),
+										lineType: arcEnt.lineType
+									});
+								}
 								handled = true;
 							}
 						} else {
@@ -2477,6 +2750,113 @@ export function extractClosedLoopsInView(
 		: loops;
 	return finalLoops.sort((a, b) => b.area - a.area);
 }
+
+/**
+ * Layer 2: Strict 2D Closed Loop Containment Hierarchy Tree (Containment Tree Builder)
+ * Computes exact `nestingDepth` (0 = outer silhouette, 1 = primary inner feature, >= 2 = nested inner feature)
+ * and `parentKind` ("none" | "loop" | "circle") for all closed loops and circles in a view.
+ */
+export function buildViewContainmentHierarchy(solidLoops: any[], solidCircles: any[]): void {
+	const primaryLoops = solidLoops.filter((lp) => !lp.isDecomposedSubLoop);
+	const solidCirs = solidCircles.filter((c) => c.lineType === "thick_solid");
+
+	const isCircleInsideLoop = (cir: any, lp: any): boolean => {
+		const cirArea = Math.PI * cir.radius * cir.radius;
+		if (cirArea >= lp.area * 0.96) return false;
+		if (
+			cir.center.u - cir.radius < lp.uMin - 2.0 ||
+			cir.center.u + cir.radius > lp.uMax + 2.0 ||
+			cir.center.v - cir.radius < lp.vMin - 2.0 ||
+			cir.center.v + cir.radius > lp.vMax + 2.0
+		) {
+			return false;
+		}
+		return (
+			pointInPolygon2D(cir.center, lp.points) ||
+			curvedLoopSignedDist2D(cir.center, lp.points, lp.segments) <= 0.5
+		);
+	};
+
+	const isCircleInsideCircle = (inner: any, outer: any): boolean => {
+		if (inner === outer) return false;
+		if (inner.radius >= outer.radius - 0.8) return false;
+		return dist2D(inner.center, outer.center) + inner.radius <= outer.radius + 2.5;
+	};
+
+	const isLoopInsideLoop = (inner: any, outer: any): boolean => {
+		if (inner === outer) return false;
+		if (inner.area >= outer.area * 0.94) return false;
+		if (
+			inner.uMin < outer.uMin - 1.8 ||
+			inner.uMax > outer.uMax + 1.8 ||
+			inner.vMin < outer.vMin - 1.8 ||
+			inner.vMax > outer.vMax + 1.8
+		) {
+			return false;
+		}
+		const midPt = { u: 0.5 * (inner.uMin + inner.uMax), v: 0.5 * (inner.vMin + inner.vMax) };
+		return (
+			pointInPolygon2D(midPt, outer.points) ||
+			inner.points.some((pt: Point2D) => pointInPolygon2D(pt, outer.points))
+		);
+	};
+
+	const isLoopInsideCircle = (inner: any, outerCir: any): boolean => {
+		const cirArea = Math.PI * outerCir.radius * outerCir.radius;
+		if (inner.area >= cirArea * 0.94) return false;
+		return inner.points.every((pt: Point2D) => dist2D(pt, outerCir.center) <= outerCir.radius + 2.0);
+	};
+
+	for (const lp of solidLoops) {
+		if (lp.isDecomposedSubLoop) {
+			lp.nestingDepth = 0;
+			lp.parentKind = "none";
+			continue;
+		}
+		const containingLoops = primaryLoops.filter((other) => isLoopInsideLoop(lp, other));
+		const containingCircles = solidCirs.filter((cir) => isLoopInsideCircle(lp, cir));
+		lp.nestingDepth = containingLoops.length + containingCircles.length;
+		if (lp.nestingDepth === 0) {
+			lp.parentKind = "none";
+		} else {
+			const smallestLoopArea = containingLoops.length > 0 ? Math.min(...containingLoops.map((l) => l.area)) : Infinity;
+			const smallestCirArea =
+				containingCircles.length > 0
+					? Math.min(...containingCircles.map((c) => Math.PI * c.radius * c.radius))
+					: Infinity;
+			lp.parentKind = smallestCirArea < smallestLoopArea ? "circle" : "loop";
+		}
+	}
+
+	for (const cir of solidCircles) {
+		if (cir.lineType !== "thick_solid") {
+			cir.nestingDepth = 1;
+			cir.parentKind = "loop";
+			continue;
+		}
+		const containingLoops = primaryLoops.filter((lp) => isCircleInsideLoop(cir, lp));
+		const containingCircles = solidCirs.filter((other) => isCircleInsideCircle(cir, other));
+		cir.nestingDepth = containingLoops.length + containingCircles.length;
+		if (cir.nestingDepth === 0) {
+			cir.parentKind = "none";
+		} else {
+			const smallestLoopArea = containingLoops.length > 0 ? Math.min(...containingLoops.map((l) => l.area)) : Infinity;
+			const smallestCirArea =
+				containingCircles.length > 0
+					? Math.min(...containingCircles.map((c) => Math.PI * c.radius * c.radius))
+					: Infinity;
+			cir.parentKind = smallestCirArea < smallestLoopArea ? "circle" : "loop";
+			if (containingCircles.length > 0) {
+				const sortedParentCirs = [...containingCircles].sort((a, b) => a.radius - b.radius);
+				cir.parentCircle = sortedParentCirs[0];
+			}
+			if (containingLoops.length > 0) {
+				const sortedParentLoops = [...containingLoops].sort((a, b) => a.area - b.area);
+				cir.parentLoop = sortedParentLoops[0];
+			}
+		}
+	}
+}
 /**
 * Extract 3-sided open U-slots or parallel dashed line pairs in a view
 */
@@ -2487,11 +2867,22 @@ export function extractOpenSlotsAndDashedBandsInView(entities, view, viewBounds)
 	const onlySolid = dashedLines.filter((e) => e.lineType === "thick_solid");
 	const solidSegs = viewUserEnts.filter((e) => e.lineType === "thick_solid" && (e.type === "line" || e.type === "rect" || e.type === "polygon")).flatMap((e) => expandEntityToSegments(e));
 	const solidCurves = viewUserEnts.filter((e) => e.lineType === "thick_solid" && (e.type === "circle" || e.type === "arc"));
+	const allViewCirclesAndArcs = viewUserEnts.filter((e) => e.type === "circle" || e.type === "arc");
+	const isInnerHoleCircle = (c: any) => {
+		if (!viewBounds || c.type !== "circle" || !c.center || c.radius === void 0) return false;
+		return (
+			c.center.u - c.radius > viewBounds.uMin + 1.5 &&
+			c.center.u + c.radius < viewBounds.uMax - 1.5 &&
+			c.center.v - c.radius > viewBounds.vMin + 1.5 &&
+			c.center.v + c.radius < viewBounds.vMax - 1.5
+		);
+	};
 	const isTouchingSolidBoundary = (pt, tol = 2.5) => {
 		for (const s of solidSegs) {
 			if (pointToSegmentDist(pt, s.p1, s.p2).dist <= tol) return true;
 		}
 		for (const c of solidCurves) {
+			if (isInnerHoleCircle(c)) continue;
 			if (c.center && c.radius !== void 0 && Math.abs(dist2D(pt, c.center) - c.radius) <= tol) return true;
 		}
 		if (viewBounds) {
@@ -2536,25 +2927,89 @@ export function extractOpenSlotsAndDashedBandsInView(entities, view, viewBounds)
 			uMax: Math.max(ln.p1.u, ln.p2.u)
 		});
 	}
-	const vertDashed = [];
+	const isVertGapBridgedByInnerFeature = (u: number, gapVMin: number, gapVMax: number): boolean => {
+		if (gapVMax <= gapVMin + 1.5) return true;
+		for (const c of allViewCirclesAndArcs) {
+			if (!c.center || c.radius === void 0) continue;
+			const du = Math.abs(u - c.center.u);
+			if (du <= c.radius + 2.5) {
+				const dv = du < c.radius ? Math.sqrt(c.radius * c.radius - du * du) : 0;
+				const cVMin = c.center.v - Math.max(dv, c.radius);
+				const cVMax = c.center.v + Math.max(dv, c.radius);
+				if (gapVMin >= cVMin - 3.5 && gapVMax <= cVMax + 3.5) return true;
+			}
+		}
+		for (const h1 of rawHorizSolid) {
+			for (const h2 of rawHorizSolid) {
+				if (h2.v <= h1.v + 1.5) continue;
+				if (u >= Math.min(h1.uMin, h2.uMin) - 2.5 && u <= Math.max(h1.uMax, h2.uMax) + 2.5) {
+					if (Math.abs(gapVMin - h1.v) <= 3.0 && Math.abs(gapVMax - h2.v) <= 3.0) return true;
+				}
+			}
+		}
+		for (const h1 of rawHorizDashed) {
+			for (const h2 of rawHorizDashed) {
+				if (h2.v <= h1.v + 1.5) continue;
+				if (u >= Math.min(h1.uMin, h2.uMin) - 2.5 && u <= Math.max(h1.uMax, h2.uMax) + 2.5) {
+					if (Math.abs(gapVMin - h1.v) <= 3.0 && Math.abs(gapVMax - h2.v) <= 3.0) return true;
+				}
+			}
+		}
+		return false;
+	};
+	const isHorizGapBridgedByInnerFeature = (v: number, gapUMin: number, gapUMax: number): boolean => {
+		if (gapUMax <= gapUMin + 1.5) return true;
+		for (const c of allViewCirclesAndArcs) {
+			if (!c.center || c.radius === void 0) continue;
+			const dv = Math.abs(v - c.center.v);
+			if (dv <= c.radius + 2.5) {
+				const du = dv < c.radius ? Math.sqrt(c.radius * c.radius - dv * dv) : 0;
+				const cUMin = c.center.u - Math.max(du, c.radius);
+				const cUMax = c.center.u + Math.max(du, c.radius);
+				if (gapUMin >= cUMin - 3.5 && gapUMax <= cUMax + 3.5) return true;
+			}
+		}
+		for (const v1 of rawVertSolid) {
+			for (const v2 of rawVertSolid) {
+				if (v2.u <= v1.u + 1.5) continue;
+				if (v >= Math.min(v1.vMin, v2.vMin) - 2.5 && v <= Math.max(v1.vMax, v2.vMax) + 2.5) {
+					if (Math.abs(gapUMin - v1.u) <= 3.0 && Math.abs(gapUMax - v2.u) <= 3.0) return true;
+				}
+			}
+		}
+		for (const v1 of rawVertDashed) {
+			for (const v2 of rawVertDashed) {
+				if (v2.u <= v1.u + 1.5) continue;
+				if (v >= Math.min(v1.vMin, v2.vMin) - 2.5 && v <= Math.max(v1.vMax, v2.vMax) + 2.5) {
+					if (Math.abs(gapUMin - v1.u) <= 3.0 && Math.abs(gapUMax - v2.u) <= 3.0) return true;
+				}
+			}
+		}
+		return false;
+	};
+	const vertDashed: any[] = [];
 	const sortedVert = [...rawVertDashed].sort((a, b) => a.u - b.u || a.vMin - b.vMin);
 	for (const seg of sortedVert) {
 		const prev = vertDashed[vertDashed.length - 1];
-		if (prev && Math.abs(prev.u - seg.u) <= 1.2 && seg.vMin <= prev.vMax + 1) {
+		if (prev && Math.abs(prev.u - seg.u) <= 1.2 && (seg.vMin <= prev.vMax + 1 || isVertGapBridgedByInnerFeature(0.5 * (prev.u + seg.u), prev.vMax, seg.vMin))) {
+			if (!prev.subSpans) prev.subSpans = [{ vMin: prev.vMin, vMax: prev.vMax }];
+			prev.subSpans.push({ vMin: seg.vMin, vMax: seg.vMax });
 			prev.u = .5 * (prev.u + seg.u);
 			prev.vMin = Math.min(prev.vMin, seg.vMin);
 			prev.vMax = Math.max(prev.vMax, seg.vMax);
-		} else vertDashed.push({ ...seg });
+		} else vertDashed.push({ ...seg, subSpans: [{ vMin: seg.vMin, vMax: seg.vMax }] });
 	}
-	const horizDashed = [];
+	const horizDashed: any[] = [];
 	const sortedHoriz = [...rawHorizDashed].sort((a, b) => a.v - b.v || a.uMin - b.uMin);
 	for (const seg of sortedHoriz) {
 		const prev = horizDashed[horizDashed.length - 1];
-		if (prev && Math.abs(prev.v - seg.v) <= 1.2 && seg.uMin <= prev.uMax + 1) {
+		if (prev && Math.abs(prev.v - seg.v) <= 1.2 && (seg.uMin <= prev.uMax + 1 || isHorizGapBridgedByInnerFeature(0.5 * (prev.v + seg.v), prev.uMax, seg.uMin))) {
+			if (!prev.subSpans) prev.subSpans = [{ uMin: prev.uMin, uMax: prev.uMax }];
+			prev.subSpans.push({ uMin: seg.uMin, uMax: seg.uMax });
 			prev.v = .5 * (prev.v + seg.v);
 			prev.uMin = Math.min(prev.uMin, seg.uMin);
 			prev.uMax = Math.max(prev.uMax, seg.uMax);
-		} else horizDashed.push({ ...seg });
+		} else horizDashed.push({ ...seg, subSpans: [{ uMin: seg.uMin, uMax: seg.uMax }] });
 	}
 	const hasSlantedBridge = (ptA, ptB, tol = 3.5) => slantedDashed.some((s) => dist2D(s.p1, ptA) <= tol && dist2D(s.p2, ptB) <= tol || dist2D(s.p1, ptB) <= tol && dist2D(s.p2, ptA) <= tol);
 	const consumedVertIdx = /* @__PURE__ */ new Set();
@@ -2614,7 +3069,8 @@ export function extractOpenSlotsAndDashedBandsInView(entities, view, viewBounds)
 					vMin,
 					vMax,
 					openMin: botTouchA && botTouchB,
-					openMax: topTouchA && topTouchB
+					openMax: topTouchA && topTouchB,
+					subSpans: leftSeg.subSpans || rightSeg.subSpans
 				});
 			}
 		} else if (topAligned && hasSlantedBridge({
@@ -2848,10 +3304,102 @@ export function extractOpenSlotsAndDashedBandsInView(entities, view, viewBounds)
 			uMax: Math.max(a.uMax, b.uMax)
 		});
 	}
+	const taperedUBands: { v1: number; v2: number; u1Min: number; u1Max: number; u2Min: number; u2Max: number; ids: string[] }[] = [];
+	const taperedVBands: { u1: number; u2: number; v1Min: number; v1Max: number; v2Min: number; v2Max: number; ids: string[] }[] = [];
+	const uTaperCandidates = [
+		...slantedDashed.filter((s) => Math.abs(s.p2.v - s.p1.v) >= 3.0).map((s) => ({
+			pMinV: s.p1.v <= s.p2.v ? s.p1 : s.p2,
+			pMaxV: s.p1.v <= s.p2.v ? s.p2 : s.p1,
+			id: s.id,
+			isSlanted: true
+		})),
+		...vertDashed.filter((_, idx) => !consumedVertIdx.has(idx) && (vertDashed[idx].vMax - vertDashed[idx].vMin) >= 3.0).map((v) => ({
+			pMinV: { u: v.u, v: v.vMin },
+			pMaxV: { u: v.u, v: v.vMax },
+			id: v.id,
+			isSlanted: false
+		}))
+	];
+	for (let i = 0; i < uTaperCandidates.length; i++) {
+		for (let j = i + 1; j < uTaperCandidates.length; j++) {
+			const a = uTaperCandidates[i];
+			const b = uTaperCandidates[j];
+			if (!a.isSlanted && !b.isSlanted) continue;
+			if (Math.abs(a.pMinV.v - b.pMinV.v) <= 3.5 && Math.abs(a.pMaxV.v - b.pMaxV.v) <= 3.5) {
+				const v1 = 0.5 * (a.pMinV.v + b.pMinV.v);
+				const v2 = 0.5 * (a.pMaxV.v + b.pMaxV.v);
+				if (v2 - v1 < 3.0) continue;
+				const du1 = a.pMinV.u - b.pMinV.u;
+				const du2 = a.pMaxV.u - b.pMaxV.u;
+				if (du1 * du2 < -1.0) continue;
+				const u1Min = Math.min(a.pMinV.u, b.pMinV.u);
+				const u1Max = Math.max(a.pMinV.u, b.pMinV.u);
+				const u2Min = Math.min(a.pMaxV.u, b.pMaxV.u);
+				const u2Max = Math.max(a.pMaxV.u, b.pMaxV.u);
+				if (Math.abs((u2Max - u2Min) - (u1Max - u1Min)) >= 1.5 || Math.abs(0.5 * (u2Min + u2Max) - 0.5 * (u1Min + u1Max)) >= 1.5) {
+					taperedUBands.push({
+						v1,
+						v2,
+						u1Min,
+						u1Max,
+						u2Min,
+						u2Max,
+						ids: [a.id, b.id].filter(Boolean)
+					});
+				}
+			}
+		}
+	}
+	const vTaperCandidates = [
+		...slantedDashed.filter((s) => Math.abs(s.p2.u - s.p1.u) >= 3.0).map((s) => ({
+			pMinU: s.p1.u <= s.p2.u ? s.p1 : s.p2,
+			pMaxU: s.p1.u <= s.p2.u ? s.p2 : s.p1,
+			id: s.id,
+			isSlanted: true
+		})),
+		...horizDashed.filter((_, idx) => !consumedHorizIdx.has(idx) && (horizDashed[idx].uMax - horizDashed[idx].uMin) >= 3.0).map((h) => ({
+			pMinU: { u: h.uMin, v: h.v },
+			pMaxU: { u: h.uMax, v: h.v },
+			id: h.id,
+			isSlanted: false
+		}))
+	];
+	for (let i = 0; i < vTaperCandidates.length; i++) {
+		for (let j = i + 1; j < vTaperCandidates.length; j++) {
+			const a = vTaperCandidates[i];
+			const b = vTaperCandidates[j];
+			if (!a.isSlanted && !b.isSlanted) continue;
+			if (Math.abs(a.pMinU.u - b.pMinU.u) <= 3.5 && Math.abs(a.pMaxU.u - b.pMaxU.u) <= 3.5) {
+				const u1 = 0.5 * (a.pMinU.u + b.pMinU.u);
+				const u2 = 0.5 * (a.pMaxU.u + b.pMaxU.u);
+				if (u2 - u1 < 3.0) continue;
+				const dv1 = a.pMinU.v - b.pMinU.v;
+				const dv2 = a.pMaxU.v - b.pMaxU.v;
+				if (dv1 * dv2 < -1.0) continue;
+				const v1Min = Math.min(a.pMinU.v, b.pMinU.v);
+				const v1Max = Math.max(a.pMinU.v, b.pMinU.v);
+				const v2Min = Math.min(a.pMaxU.v, b.pMaxU.v);
+				const v2Max = Math.max(a.pMaxU.v, b.pMaxU.v);
+				if (Math.abs((v2Max - v2Min) - (v1Max - v1Min)) >= 1.5 || Math.abs(0.5 * (v2Min + v2Max) - 0.5 * (v1Min + v1Max)) >= 1.5) {
+					taperedVBands.push({
+						u1,
+						u2,
+						v1Min,
+						v1Max,
+						v2Min,
+						v2Max,
+						ids: [a.id, b.id].filter(Boolean)
+					});
+				}
+			}
+		}
+	}
 	return {
 		uSlots,
 		uBands,
 		vBands,
+		taperedUBands,
+		taperedVBands,
 		singleHorizDashed: horizDashed.map(({ v, uMin, uMax }, idx) => ({
 			v,
 			uMin,
@@ -2890,6 +3438,13 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 	const allLoopsFront = extractClosedLoopsInView(userEntities, "front", ["thick_solid", "thin_dashed"], stitchedArcIdsFront);
 	const allLoopsTop = extractClosedLoopsInView(userEntities, "top", ["thick_solid", "thin_dashed"], stitchedArcIdsTop);
 	const allLoopsLeft = extractClosedLoopsInView(userEntities, "left", ["thick_solid", "thin_dashed"], stitchedArcIdsLeft);
+	// Layer 2: Build Strict 2D Closed Loop Containment Hierarchy Tree for each view
+	buildViewContainmentHierarchy(solidLoopsFront, circlesFront);
+	buildViewContainmentHierarchy(solidLoopsTop, circlesTop);
+	buildViewContainmentHierarchy(solidLoopsLeft, circlesLeft);
+	buildViewContainmentHierarchy(allLoopsFront, circlesFront);
+	buildViewContainmentHierarchy(allLoopsTop, circlesTop);
+	buildViewContainmentHierarchy(allLoopsLeft, circlesLeft);
 	const hasValidRegion = (v) => {
 		if (v === "front") return solidLoopsFront.length > 0 || circlesFront.length > 0;
 		if (v === "top") return solidLoopsTop.length > 0 || circlesTop.length > 0;
@@ -2949,6 +3504,8 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 		uBands: [],
 		vBands: [],
 		singleHorizDashed: [],
+		taperedUBands: [],
+		taperedVBands: [],
 		singleVertDashed: [],
 		solidUBands: [],
 		solidVBands: []
@@ -2966,11 +3523,18 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 		}
 	};
 	const pairedSubtracts = [];
+	// Layer 2 Iron Rule: Only nestingDepth === 0 circles can be outer circles of a view
 	const getOuterCircleInView = (v) => {
 		const circles = v === "front" ? circlesFront : v === "top" ? circlesTop : circlesLeft;
 		const vB = v === "front" ? bFront : v === "top" ? bTop : bLeft;
 		if (!vB) return void 0;
-		return circles.find((c) => c.lineType === "thick_solid" && Math.abs(c.radius * 2 - (vB.uMax - vB.uMin)) <= 3 && Math.abs(c.radius * 2 - (vB.vMax - vB.vMin)) <= 3);
+		return circles.find(
+			(c) =>
+				c.lineType === "thick_solid" &&
+				(c.nestingDepth ?? 0) === 0 &&
+				Math.abs(c.radius * 2 - (vB.uMax - vB.uMin)) <= 3 &&
+				Math.abs(c.radius * 2 - (vB.vMax - vB.vMin)) <= 3
+		);
 	};
 	const cir1 = getOuterCircleInView(v1);
 	const cir2 = getOuterCircleInView(v2);
@@ -3058,7 +3622,11 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 			}
 		}
 	}
+	// Layer 3: Strict "Rectangle vs. Trapezoid vs. Triangle" Geometric Classifier
 	const analyzeLoopProfile = (lp: any): any => {
+		if (!lp || ((lp.nestingDepth ?? 0) >= 1 && !lp.isDecomposedSubLoop)) {
+			return { kind: "general" };
+		}
 		const arcSegs = lp.segments.filter((s) => s.kind === "arc");
 		const lineSegs = lp.segments.filter((s) => s.kind === "line");
 		if (arcSegs.length === 1 && lineSegs.length === 1 && arcSegs[0].center && arcSegs[0].radius) {
@@ -3126,10 +3694,14 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 		}
 		if (arcSegs.length === 0 && lineSegs.length === 4) {
 			const horiz = lineSegs.filter((s) => Math.abs(s.p1.v - s.p2.v) <= 1.5);
-			if (horiz.length === 2) {
+			const nonHoriz = lineSegs.filter((s) => Math.abs(s.p1.v - s.p2.v) > 1.5);
+			if (horiz.length === 2 && nonHoriz.length === 2) {
 				const w1 = Math.abs(horiz[0].p2.u - horiz[0].p1.u);
 				const w2 = Math.abs(horiz[1].p2.u - horiz[1].p1.u);
-				if (Math.abs(w1 - w2) > 2) {
+				const bothSidesSlantedH = nonHoriz.every(
+					(s) => Math.abs(s.p2.u - s.p1.u) / Math.max(1.0, Math.abs(s.p2.v - s.p1.v)) > 0.08
+				);
+				if (Math.abs(w1 - w2) > 4.0 && bothSidesSlantedH) {
 					const vA = .5 * (horiz[0].p1.v + horiz[0].p2.v);
 					const vB = .5 * (horiz[1].p1.v + horiz[1].p2.v);
 					const hMin = vA < vB ? horiz[0] : horiz[1];
@@ -3154,10 +3726,14 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 				}
 			}
 			const vert = lineSegs.filter((s) => Math.abs(s.p1.u - s.p2.u) <= 1.5);
-			if (vert.length === 2) {
+			const nonVert = lineSegs.filter((s) => Math.abs(s.p1.u - s.p2.u) > 1.5);
+			if (vert.length === 2 && nonVert.length === 2) {
 				const h1 = Math.abs(vert[0].p2.v - vert[0].p1.v);
 				const h2 = Math.abs(vert[1].p2.v - vert[1].p1.v);
-				if (Math.abs(h1 - h2) > 2) {
+				const bothSidesSlantedV = nonVert.every(
+					(s) => Math.abs(s.p2.v - s.p1.v) / Math.max(1.0, Math.abs(s.p2.u - s.p1.u)) > 0.08
+				);
+				if (Math.abs(h1 - h2) > 4.0 && bothSidesSlantedV) {
 					const uA = .5 * (vert[0].p1.u + vert[0].p2.u);
 					const uB = .5 * (vert[1].p1.u + vert[1].p2.u);
 					const vMinSeg = uA < uB ? vert[0] : vert[1];
@@ -3183,7 +3759,11 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 			}
 		}
 		if (lineSegs.length >= 2) {
-			const vSlanted = lineSegs.filter((s) => Math.abs(s.p2.v - s.p1.v) > 4 && Math.abs(s.p2.u - s.p1.u) > 1);
+			const vSlanted = lineSegs.filter(
+				(s) =>
+					Math.abs(s.p2.v - s.p1.v) > 4 &&
+					Math.abs(s.p2.u - s.p1.u) / Math.max(1.0, Math.abs(s.p2.v - s.p1.v)) > 0.08
+			);
 			if (vSlanted.length >= 2) {
 				for (let i = 0; i < vSlanted.length; i++) for (let j = i + 1; j < vSlanted.length; j++) {
 					const sA = vSlanted[i];
@@ -3195,7 +3775,7 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 					if (Math.abs(aMinPt.v - bMinPt.v) <= 2.5 && Math.abs(aMaxPt.v - bMaxPt.v) <= 2.5) {
 						const spanMin = Math.abs(bMinPt.u - aMinPt.u);
 						const spanMax = Math.abs(bMaxPt.u - aMaxPt.u);
-						if (Math.abs(spanMax - spanMin) > 2) return {
+						if (Math.abs(spanMax - spanMin) > 4.0) return {
 							kind: "trapezoid_h",
 							rAtVMin: .5 * spanMin,
 							rAtVMax: .5 * spanMax,
@@ -3212,7 +3792,11 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 					}
 				}
 			}
-			const uSlanted = lineSegs.filter((s) => Math.abs(s.p2.u - s.p1.u) > 4 && Math.abs(s.p2.v - s.p1.v) > 1);
+			const uSlanted = lineSegs.filter(
+				(s) =>
+					Math.abs(s.p2.u - s.p1.u) > 4 &&
+					Math.abs(s.p2.v - s.p1.v) / Math.max(1.0, Math.abs(s.p2.u - s.p1.u)) > 0.08
+			);
 			if (uSlanted.length >= 2) {
 				for (let i = 0; i < uSlanted.length; i++) for (let j = i + 1; j < uSlanted.length; j++) {
 					const sA = uSlanted[i];
@@ -3224,7 +3808,7 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 					if (Math.abs(aMinPt.u - bMinPt.u) <= 2.5 && Math.abs(aMaxPt.u - bMaxPt.u) <= 2.5) {
 						const spanMin = Math.abs(bMinPt.v - aMinPt.v);
 						const spanMax = Math.abs(bMaxPt.v - aMaxPt.v);
-						if (Math.abs(spanMax - spanMin) > 2) return {
+						if (Math.abs(spanMax - spanMin) > 4.0) return {
 							kind: "trapezoid_v",
 							rAtUMin: .5 * spanMin,
 							rAtUMax: .5 * spanMax,
@@ -3245,9 +3829,16 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 		return { kind: "general" };
 	};
 	const detectSlantedProfileFromRawEntities = (view: any): any => {
+		const viewLoops = view === "front" ? solidLoopsFront : view === "top" ? solidLoopsTop : solidLoopsLeft;
+		// Layer 3 Iron Rule: Never invent a slanted profile from raw entities if the view already has a valid depth === 0 closed loop!
+		if (viewLoops.some((lp) => (lp.nestingDepth ?? 0) === 0)) return null;
 		const rawSegs = userEntities.filter((e) => e.view === view && e.lineType === "thick_solid" && (e.type === "line" || e.type === "polygon")).flatMap((e) => expandEntityToSegments(e));
 		const rawArcs = userEntities.filter((e) => e.view === view && e.lineType === "thick_solid" && e.type === "arc");
-		const vSlanted = rawSegs.filter((s) => Math.abs(s.p2.v - s.p1.v) > 4 && Math.abs(s.p2.u - s.p1.u) > 1);
+		const vSlanted = rawSegs.filter(
+			(s) =>
+				Math.abs(s.p2.v - s.p1.v) > 4 &&
+				Math.abs(s.p2.u - s.p1.u) / Math.max(1.0, Math.abs(s.p2.v - s.p1.v)) > 0.08
+		);
 		for (let i = 0; i < vSlanted.length; i++) for (let j = i + 1; j < vSlanted.length; j++) {
 			const sA = vSlanted[i];
 			const sB = vSlanted[j];
@@ -3272,7 +3863,7 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 					baseUMin: Math.min(aMinPt.u, bMinPt.u),
 					baseUMax: Math.max(aMinPt.u, bMinPt.u)
 				};
-				if (Math.abs(spanMax - spanMin) > 2) return {
+				if (Math.abs(spanMax - spanMin) > 4.0) return {
 					kind: "trapezoid_h",
 					rAtVMin: .5 * spanMin,
 					rAtVMax: .5 * spanMax,
@@ -3288,7 +3879,11 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 				};
 			}
 		}
-		const uSlanted = rawSegs.filter((s) => Math.abs(s.p2.u - s.p1.u) > 4 && Math.abs(s.p2.v - s.p1.v) > 1);
+		const uSlanted = rawSegs.filter(
+			(s) =>
+				Math.abs(s.p2.u - s.p1.u) > 4 &&
+				Math.abs(s.p2.v - s.p1.v) / Math.max(1.0, Math.abs(s.p2.u - s.p1.u)) > 0.08
+		);
 		for (let i = 0; i < uSlanted.length; i++) for (let j = i + 1; j < uSlanted.length; j++) {
 			const sA = uSlanted[i];
 			const sB = uSlanted[j];
@@ -3313,7 +3908,7 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 					baseVMin: Math.min(aMinPt.v, bMinPt.v),
 					baseVMax: Math.max(aMinPt.v, bMinPt.v)
 				};
-				if (Math.abs(spanMax - spanMin) > 2) return {
+				if (Math.abs(spanMax - spanMin) > 4.0) return {
 					kind: "trapezoid_v",
 					rAtUMin: .5 * spanMin,
 					rAtUMax: .5 * spanMax,
@@ -3336,13 +3931,17 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 	// Pairs all independent sub-features (VirtualCircles, Semicircles, Triangles,
 	// Trapezoids, Rectangles, Polygons) between v1 and v2 when their shared-axis
 	// spans align within 2.5mm, generating additive 3D primitives.
+	// Layer 2 Iron Rule: Only nestingDepth === 0 outer circles/loops (and inner circles
+	// whose parent is a nestingDepth === 0 outer circle) may participate in base pairing!
 	// ============================================================================
 	if (basePrimitives.length === 0) {
 		const buildSubFeaturesForView = (v: "front" | "top" | "left") => {
 			const rawCircles = (v === "front" ? circlesFront : v === "top" ? circlesTop : circlesLeft)
-				.filter((c) => c.lineType === "thick_solid")
+				.filter((c) => c.lineType === "thick_solid" && ((c.nestingDepth ?? 0) === 0 || c.parentKind === "circle"))
 				.sort((a, b) => b.radius - a.radius);
-			const rawLoops = v === "front" ? solidLoopsFront : v === "top" ? solidLoopsTop : solidLoopsLeft;
+			const rawLoops = (v === "front" ? solidLoopsFront : v === "top" ? solidLoopsTop : solidLoopsLeft).filter(
+				(lp: any) => (lp.nestingDepth ?? 0) === 0
+			);
 
 			const circleClusters: any[] = [];
 			for (const c of rawCircles) {
@@ -3351,7 +3950,7 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 				);
 				if (parentCluster) {
 					parentCluster.inners.push(c);
-				} else {
+				} else if ((c.nestingDepth ?? 0) === 0) {
 					circleClusters.push({
 						featureType: "circle",
 						outer: c,
@@ -4546,7 +5145,7 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 		const loops = v === "front" ? solidLoopsFront : v === "top" ? solidLoopsTop : solidLoopsLeft;
 		const vB = v === "front" ? bFront : v === "top" ? bTop : bLeft;
 		if (!vB) return null;
-		const outerCircle = circles.find((c) => c.lineType === "thick_solid" && Math.abs(c.radius * 2 - (vB.uMax - vB.uMin)) <= 3 && Math.abs(c.radius * 2 - (vB.vMax - vB.vMin)) <= 3);
+		const outerCircle = circles.find((c) => c.lineType === "thick_solid" && (c.nestingDepth ?? 0) === 0 && Math.abs(c.radius * 2 - (vB.uMax - vB.uMin)) <= 3 && Math.abs(c.radius * 2 - (vB.vMax - vB.vMin)) <= 3);
 		if (outerCircle) {
 			markCircleUsed(outerCircle);
 			if (v === "top") return {
@@ -4599,7 +5198,7 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 			};
 		}
 		if (loops.length > 0) {
-			const outerLoop = loops[0];
+			const outerLoop = loops.find((lp: any) => (lp.nestingDepth ?? 0) === 0 && !lp.isDecomposedSubLoop) || loops[0];
 			const isAxisAlignedRect = !outerLoop.segments.some((s) => s.kind === "arc") && outerLoop.points.length === 4 && Math.abs(outerLoop.area - (outerLoop.uMax - outerLoop.uMin) * (outerLoop.vMax - outerLoop.vMin)) <= 2;
 			if (v === "front") return {
 				id: `base-ext-front`,
@@ -4695,6 +5294,12 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 	}
 	if (basePrimitives.length === 0) return [];
 	const underConstrainedLoops = [];
+	const underConstrainedNestedCircles: Array<{
+		view: "front" | "top" | "left";
+		outerCircle: any;
+		innerCircle: any;
+		outerHoleId: string;
+	}> = [];
 	const PAIR_TOL = 2.5;
 	const usedFrontUBands = /* @__PURE__ */ new Set();
 	const usedFrontVBands = /* @__PURE__ */ new Set();
@@ -4762,7 +5367,13 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 	};
 	const isSameOuterLoop = (lp, outerLoops, vB) => {
 		if (!vB) return true;
-		if (lp.usedAsAddSubFeature) return true;
+		if (lp.usedAsAddSubFeature || lp.isDecomposedSubLoop) return true;
+		const isStrictlyInsideBounds =
+			lp.uMin > vB.uMin + 1.8 &&
+			lp.uMax < vB.uMax - 1.8 &&
+			lp.vMin > vB.vMin + 1.8 &&
+			lp.vMax < vB.vMax - 1.8;
+		if (lp.lineType === "thick_solid" && (lp.nestingDepth ?? 0) === 0 && !isStrictlyInsideBounds) return true;
 		if (outerLoops.length > 0) {
 			const outer = outerLoops[0];
 			if (Math.abs(lp.uMin - outer.uMin) <= 1.5 && Math.abs(lp.uMax - outer.uMax) <= 1.5 && Math.abs(lp.vMin - outer.vMin) <= 1.5 && Math.abs(lp.vMax - outer.vMax) <= 1.5) return true;
@@ -4852,7 +5463,7 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 	}
 	const isBandEndOnViewExterior = (outerLoops, viewCircles, vB, uCenter, uEdge1, uEdge2, vEnd, dirV) => {
 		if (vB) {
-			const outerCir = viewCircles.find((c) => c.lineType === "thick_solid" && Math.abs(c.radius * 2 - (vB.uMax - vB.uMin)) <= 3 && Math.abs(c.radius * 2 - (vB.vMax - vB.vMin)) <= 3);
+			const outerCir = viewCircles.find((c) => c.lineType === "thick_solid" && (c.nestingDepth ?? 0) === 0 && Math.abs(c.radius * 2 - (vB.uMax - vB.uMin)) <= 3 && Math.abs(c.radius * 2 - (vB.vMax - vB.vMin)) <= 3);
 			if (outerCir) {
 				const dx1 = Math.abs(uEdge1 - outerCir.center.u);
 				const dx2 = Math.abs(uEdge2 - outerCir.center.u);
@@ -4914,6 +5525,7 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 	const isSpanMatchingOuterFlatEndOrStep = (view: "front" | "top" | "left", coordAxis: "u" | "v", s1: number, s2: number) => {
 		const loops = view === "front" ? solidLoopsFront : view === "top" ? solidLoopsTop : solidLoopsLeft;
 		for (const lp of loops) {
+			if ((lp.nestingDepth ?? 0) > 0) continue;
 			for (const seg of lp.segments) {
 				if (seg.kind !== "line" || !seg.p1 || !seg.p2) continue;
 				if (coordAxis === "u" && Math.abs(seg.p1.v - seg.p2.v) <= 2.0) {
@@ -4930,11 +5542,178 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 		}
 		return false;
 	};
-	[
+	const unusedCircles = [
 		...circlesTop,
 		...circlesFront,
 		...circlesLeft
-	].filter((c) => !usedEntityIds.has(c.id)).forEach((c, idx) => {
+	].filter((c) => !usedEntityIds.has(c.id));
+	const consumedTaperedCircleIds = new Set<string>();
+	// Pair two inner circles with taperedDashedBands to build internal cone/frustum holes (operation: 'subtract')
+	for (let i = 0; i < unusedCircles.length; i++) {
+		for (let j = i + 1; j < unusedCircles.length; j++) {
+			const cA = unusedCircles[i];
+			const cB = unusedCircles[j];
+			if (cA.view !== cB.view) continue;
+			if (consumedTaperedCircleIds.has(cA.id) || consumedTaperedCircleIds.has(cB.id)) continue;
+			if (Math.abs(cA.radius - cB.radius) < 1.0) continue;
+			const cSmall = cA.radius <= cB.radius ? cA : cB;
+			const cBig = cA.radius <= cB.radius ? cB : cA;
+			const sU1 = cSmall.center.u - cSmall.radius, sU2 = cSmall.center.u + cSmall.radius;
+			const sV1 = cSmall.center.v - cSmall.radius, sV2 = cSmall.center.v + cSmall.radius;
+			const bU1 = cBig.center.u - cBig.radius, bU2 = cBig.center.u + cBig.radius;
+			const bV1 = cBig.center.v - cBig.radius, bV2 = cBig.center.v + cBig.radius;
+			if (cSmall.view === "front") {
+				const tbU = (slotsTop.taperedUBands || []).find((tb) =>
+					(Math.abs(tb.u1Min - sU1) <= PAIR_TOL && Math.abs(tb.u1Max - sU2) <= PAIR_TOL && Math.abs(tb.u2Min - bU1) <= PAIR_TOL && Math.abs(tb.u2Max - bU2) <= PAIR_TOL) ||
+					(Math.abs(tb.u2Min - sU1) <= PAIR_TOL && Math.abs(tb.u2Max - sU2) <= PAIR_TOL && Math.abs(tb.u1Min - bU1) <= PAIR_TOL && Math.abs(tb.u1Max - bU2) <= PAIR_TOL)
+				);
+				const tbLeftV = (slotsLeft.taperedVBands || []).find((tb) =>
+					(Math.abs(tb.v1Min - sV1) <= PAIR_TOL && Math.abs(tb.v1Max - sV2) <= PAIR_TOL && Math.abs(tb.v2Min - bV1) <= PAIR_TOL && Math.abs(tb.v2Max - bV2) <= PAIR_TOL) ||
+					(Math.abs(tb.v2Min - sV1) <= PAIR_TOL && Math.abs(tb.v2Max - sV2) <= PAIR_TOL && Math.abs(tb.v1Min - bV1) <= PAIR_TOL && Math.abs(tb.v1Max - bV2) <= PAIR_TOL)
+				);
+				if (tbU || tbLeftV) {
+					consumedTaperedCircleIds.add(cSmall.id);
+					consumedTaperedCircleIds.add(cBig.id);
+					usedEntityIds.add(cSmall.id);
+					usedEntityIds.add(cBig.id);
+					const smallAtMin = tbU
+						? (Math.abs(tbU.u1Min - sU1) <= PAIR_TOL && Math.abs(tbU.u1Max - sU2) <= PAIR_TOL)
+						: (Math.abs(tbLeftV!.v1Min - sV1) <= PAIR_TOL && Math.abs(tbLeftV!.v1Max - sV2) <= PAIR_TOL);
+					const w1 = tbU ? tbU.v1 : tbLeftV!.u1;
+					const w2 = tbU ? tbU.v2 : tbLeftV!.u2;
+					const cAtMin = smallAtMin ? cSmall : cBig;
+					const cAtMax = smallAtMin ? cBig : cSmall;
+					pairedSubtracts.push({
+						id: `sub-tapered-cone-y-${i}-${j}`,
+						featureId: `taper_hole_y_${i}`,
+						label: `Tapered Hole Ø${Math.round(cSmall.radius * 2)}-Ø${Math.round(cBig.radius * 2)}`,
+						operation: "subtract",
+						shape: "cone_y",
+						xMin: Math.min(sU1, bU1),
+						xMax: Math.max(sU2, bU2),
+						yMin: w1,
+						yMax: w2,
+						zMin: Math.min(sV1, bV1),
+						zMax: Math.max(sV2, bV2),
+						centerX: cBig.center.u,
+						centerZ: cBig.center.v,
+						uCenterMin: cAtMin.center.u,
+						vCenterMin: cAtMin.center.v,
+						uCenterMax: cAtMax.center.u,
+						vCenterMax: cAtMax.center.v,
+						radius: cBig.radius,
+						rMin: cAtMin.radius,
+						rMax: cAtMax.radius,
+						isInternalFeature: true,
+						isInsideLoopContour: true
+					} as any);
+				}
+			} else if (cSmall.view === "top") {
+				const tbFrontU = (slotsFront.taperedUBands || []).find((tb) =>
+					(Math.abs(tb.u1Min - sU1) <= PAIR_TOL && Math.abs(tb.u1Max - sU2) <= PAIR_TOL && Math.abs(tb.u2Min - bU1) <= PAIR_TOL && Math.abs(tb.u2Max - bU2) <= PAIR_TOL) ||
+					(Math.abs(tb.u2Min - sU1) <= PAIR_TOL && Math.abs(tb.u2Max - sU2) <= PAIR_TOL && Math.abs(tb.u1Min - bU1) <= PAIR_TOL && Math.abs(tb.u1Max - bU2) <= PAIR_TOL)
+				);
+				const tbLeftU = (slotsLeft.taperedUBands || []).find((tb) =>
+					(Math.abs(tb.u1Min - sV1) <= PAIR_TOL && Math.abs(tb.u1Max - sV2) <= PAIR_TOL && Math.abs(tb.u2Min - bV1) <= PAIR_TOL && Math.abs(tb.u2Max - bV2) <= PAIR_TOL) ||
+					(Math.abs(tb.u2Min - sV1) <= PAIR_TOL && Math.abs(tb.u2Max - sV2) <= PAIR_TOL && Math.abs(tb.u1Min - bV1) <= PAIR_TOL && Math.abs(tb.u1Max - bV2) <= PAIR_TOL)
+				);
+				if (tbFrontU || tbLeftU) {
+					consumedTaperedCircleIds.add(cSmall.id);
+					consumedTaperedCircleIds.add(cBig.id);
+					usedEntityIds.add(cSmall.id);
+					usedEntityIds.add(cBig.id);
+					const tb = tbFrontU || tbLeftU!;
+					const smallAtMin = tbFrontU
+						? (Math.abs(tbFrontU.u1Min - sU1) <= PAIR_TOL && Math.abs(tbFrontU.u1Max - sU2) <= PAIR_TOL)
+						: (Math.abs(tbLeftU!.u1Min - sV1) <= PAIR_TOL && Math.abs(tbLeftU!.u1Max - sV2) <= PAIR_TOL);
+					const cAtMin = smallAtMin ? cSmall : cBig;
+					const cAtMax = smallAtMin ? cBig : cSmall;
+					pairedSubtracts.push({
+						id: `sub-tapered-cone-z-${i}-${j}`,
+						featureId: `taper_hole_z_${i}`,
+						label: `Tapered Hole Ø${Math.round(cSmall.radius * 2)}-Ø${Math.round(cBig.radius * 2)}`,
+						operation: "subtract",
+						shape: "cone_z",
+						xMin: Math.min(sU1, bU1),
+						xMax: Math.max(sU2, bU2),
+						yMin: Math.min(sV1, bV1),
+						yMax: Math.max(sV2, bV2),
+						zMin: tb.v1,
+						zMax: tb.v2,
+						centerX: cBig.center.u,
+						centerY: cBig.center.v,
+						uCenterMin: cAtMin.center.u,
+						vCenterMin: cAtMin.center.v,
+						uCenterMax: cAtMax.center.u,
+						vCenterMax: cAtMax.center.v,
+						radius: cBig.radius,
+						rMin: cAtMin.radius,
+						rMax: cAtMax.radius,
+						isInternalFeature: true,
+						isInsideLoopContour: true
+					} as any);
+				}
+			} else if (cSmall.view === "left") {
+				const tbFrontV = (slotsFront.taperedVBands || []).find((tb) =>
+					(Math.abs(tb.v1Min - sV1) <= PAIR_TOL && Math.abs(tb.v1Max - sV2) <= PAIR_TOL && Math.abs(tb.v2Min - bV1) <= PAIR_TOL && Math.abs(tb.v2Max - bV2) <= PAIR_TOL) ||
+					(Math.abs(tb.v2Min - sV1) <= PAIR_TOL && Math.abs(tb.v2Max - sV2) <= PAIR_TOL && Math.abs(tb.v1Min - bV1) <= PAIR_TOL && Math.abs(tb.v1Max - bV2) <= PAIR_TOL)
+				);
+				const tbTopV = (slotsTop.taperedVBands || []).find((tb) =>
+					(Math.abs(tb.v1Min - sU1) <= PAIR_TOL && Math.abs(tb.v1Max - sU2) <= PAIR_TOL && Math.abs(tb.v2Min - bU1) <= PAIR_TOL && Math.abs(tb.v2Max - bU2) <= PAIR_TOL) ||
+					(Math.abs(tb.v2Min - sU1) <= PAIR_TOL && Math.abs(tb.v2Max - sU2) <= PAIR_TOL && Math.abs(tb.v1Min - bU1) <= PAIR_TOL && Math.abs(tb.v1Max - bU2) <= PAIR_TOL)
+				);
+				if (tbFrontV || tbTopV) {
+					consumedTaperedCircleIds.add(cSmall.id);
+					consumedTaperedCircleIds.add(cBig.id);
+					usedEntityIds.add(cSmall.id);
+					usedEntityIds.add(cBig.id);
+					const tb = tbFrontV || tbTopV!;
+					const smallAtMin = tbFrontV
+						? (Math.abs(tbFrontV.v1Min - sV1) <= PAIR_TOL && Math.abs(tbFrontV.v1Max - sV2) <= PAIR_TOL)
+						: (Math.abs(tbTopV!.v1Min - sU1) <= PAIR_TOL && Math.abs(tbTopV!.v1Max - sU2) <= PAIR_TOL);
+					const cAtMin = smallAtMin ? cSmall : cBig;
+					const cAtMax = smallAtMin ? cBig : cSmall;
+					pairedSubtracts.push({
+						id: `sub-tapered-cone-x-${i}-${j}`,
+						featureId: `taper_hole_x_${i}`,
+						label: `Tapered Hole Ø${Math.round(cSmall.radius * 2)}-Ø${Math.round(cBig.radius * 2)}`,
+						operation: "subtract",
+						shape: "cone_x",
+						xMin: tb.u1,
+						xMax: tb.u2,
+						yMin: Math.min(sU1, bU1),
+						yMax: Math.max(sU2, bU2),
+						zMin: Math.min(sV1, bV1),
+						zMax: Math.max(sV2, bV2),
+						centerY: cBig.center.u,
+						centerZ: cBig.center.v,
+						uCenterMin: cAtMin.center.u,
+						vCenterMin: cAtMin.center.v,
+						uCenterMax: cAtMax.center.u,
+						vCenterMax: cAtMax.center.v,
+						radius: cBig.radius,
+						rMin: cAtMin.radius,
+						rMax: cAtMax.radius,
+						isInternalFeature: true,
+						isInsideLoopContour: true
+					} as any);
+				}
+			}
+		}
+	}
+	unusedCircles.forEach((c, idx) => {
+		if (consumedTaperedCircleIds.has(c.id)) return;
+		const isInsideNonCircularLoop = c.parentKind === "loop" || (c.nestingDepth ?? 0) >= 1;
+		// Check if this circle is an outer inner circle (depth >= 1) that encloses a smaller concentric inner circle (depth >= 2)
+		const nestedChildCircle = unusedCircles.find(
+			(other) =>
+				other.id !== c.id &&
+				other.view === c.view &&
+				(other.parentCircle?.id === c.id ||
+					((c.nestingDepth ?? 0) >= 1 &&
+						other.radius < c.radius - 1.5 &&
+						dist2D(other.center, c.center) <= Math.max(2.5, (c.radius - other.radius) * 0.35)))
+		);
 		if (c.view === "top") {
 			const cX1 = c.center.u - c.radius;
 			const cX2 = c.center.u + c.radius;
@@ -4991,7 +5770,8 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 						yMax: cY2,
 						zMin: slantedBand.vMin,
 						zMax: slantedBand.vMax <= zMax - 1.5 ? slantedBand.vMax : zMax + 2,
-						isInternalFeature: true
+						isInternalFeature: true,
+						isInsideLoopContour: isInsideNonCircularLoop
 					} as any);
 					return;
 				}
@@ -5018,7 +5798,8 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 						yMax: cY2,
 						zMin: slantedBand.vMin,
 						zMax: slantedBand.vMax <= zMax - 1.5 ? slantedBand.vMax : zMax + 2,
-						isInternalFeature: true
+						isInternalFeature: true,
+						isInsideLoopContour: isInsideNonCircularLoop
 					} as any);
 					return;
 				}
@@ -5040,16 +5821,30 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 					}
 				}
 			}
-			// Rule 2.1: If no dashed lines match this solid circle and its span matches an outer flat base/step in the other view, never drill a false hole!
-			if (!hasExplicitDashedMatch && c.lineType === "thick_solid") {
+			// Rule 2.1: Only skip when circle is NOT inside a non-circular loop contour
+			if (!hasExplicitDashedMatch && c.lineType === "thick_solid" && !isInsideNonCircularLoop) {
 				if (isSpanMatchingOuterFlatEndOrStep("front", "u", cX1, cX2) || isSpanMatchingOuterFlatEndOrStep("left", "u", cY1, cY2)) {
 					return;
 				}
 			}
+			// Layer 4: If this outer inner circle encloses a nested concentric inner circle and has no explicit dashed depth match,
+			// make it a half-depth counterbore by default so it does not swallow the inner through-hole!
+			const holeId = `sub-hole-z-${idx}`;
+			if (!hasExplicitDashedMatch && nestedChildCircle) {
+				const zMid = Number((0.5 * (zMin + zMax)).toFixed(1));
+				zStart = zMid;
+				zEnd = zMax + 2;
+				underConstrainedNestedCircles.push({
+					view: "top",
+					outerCircle: c,
+					innerCircle: nestedChildCircle,
+					outerHoleId: holeId
+				});
+			}
 			pairedSubtracts.push({
-				id: `sub-hole-z-${idx}`,
+				id: holeId,
 				featureId: c.featureId || `hole_z_${idx}`,
-				label: `Hole Ø${Math.round(c.radius * 2)}`,
+				label: nestedChildCircle && !hasExplicitDashedMatch ? `Counterbore Ø${Math.round(c.radius * 2)}` : `Hole Ø${Math.round(c.radius * 2)}`,
 				operation: "subtract",
 				shape: "cylinder_z",
 				xMin: cX1,
@@ -5061,8 +5856,9 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 				centerX: c.center.u,
 				centerY: c.center.v,
 				radius: c.radius,
-				isInternalFeature: true
-			});
+				isInternalFeature: true,
+				isInsideLoopContour: isInsideNonCircularLoop
+			} as any);
 		} else if (c.view === "front") {
 			const cX1 = c.center.u - c.radius;
 			const cX2 = c.center.u + c.radius;
@@ -5127,15 +5923,27 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 					}
 				}
 			}
-			if (!hasExplicitDashedMatch && c.lineType === "thick_solid") {
+			if (!hasExplicitDashedMatch && c.lineType === "thick_solid" && !isInsideNonCircularLoop) {
 				if (isSpanMatchingOuterFlatEndOrStep("top", "u", cX1, cX2) || isSpanMatchingOuterFlatEndOrStep("left", "v", cZ1, cZ2)) {
 					return;
 				}
 			}
+			const holeId = `sub-hole-y-${idx}`;
+			if (!hasExplicitDashedMatch && nestedChildCircle) {
+				const yMid = Number((0.5 * (yMin + yMax)).toFixed(1));
+				yStart = yMin - 2;
+				yEnd = yMid;
+				underConstrainedNestedCircles.push({
+					view: "front",
+					outerCircle: c,
+					innerCircle: nestedChildCircle,
+					outerHoleId: holeId
+				});
+			}
 			pairedSubtracts.push({
-				id: `sub-hole-y-${idx}`,
+				id: holeId,
 				featureId: c.featureId || `hole_y_${idx}`,
-				label: `Hole Ø${Math.round(c.radius * 2)}`,
+				label: nestedChildCircle && !hasExplicitDashedMatch ? `Counterbore Ø${Math.round(c.radius * 2)}` : `Hole Ø${Math.round(c.radius * 2)}`,
 				operation: "subtract",
 				shape: "cylinder_y",
 				xMin: cX1,
@@ -5147,8 +5955,9 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 				centerX: c.center.u,
 				centerZ: c.center.v,
 				radius: c.radius,
-				isInternalFeature: true
-			});
+				isInternalFeature: true,
+				isInsideLoopContour: isInsideNonCircularLoop
+			} as any);
 		} else if (c.view === "left") {
 			const cY1 = c.center.u - c.radius;
 			const cY2 = c.center.u + c.radius;
@@ -5216,15 +6025,27 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 					}
 				}
 			}
-			if (!hasExplicitDashedMatch && c.lineType === "thick_solid") {
+			if (!hasExplicitDashedMatch && c.lineType === "thick_solid" && !isInsideNonCircularLoop) {
 				if (isSpanMatchingOuterFlatEndOrStep("front", "v", cZ1, cZ2) || isSpanMatchingOuterFlatEndOrStep("top", "v", cY1, cY2)) {
 					return;
 				}
 			}
+			const holeId = `sub-hole-x-${idx}`;
+			if (!hasExplicitDashedMatch && nestedChildCircle) {
+				const xMid = Number((0.5 * (xMin + xMax)).toFixed(1));
+				xStart = xMin - 2;
+				xEnd = xMid;
+				underConstrainedNestedCircles.push({
+					view: "left",
+					outerCircle: c,
+					innerCircle: nestedChildCircle,
+					outerHoleId: holeId
+				});
+			}
 			pairedSubtracts.push({
-				id: `sub-hole-x-${idx}`,
+				id: holeId,
 				featureId: c.featureId || `hole_x_${idx}`,
-				label: `Hole Ø${Math.round(c.radius * 2)}`,
+				label: nestedChildCircle && !hasExplicitDashedMatch ? `Counterbore Ø${Math.round(c.radius * 2)}` : `Hole Ø${Math.round(c.radius * 2)}`,
 				operation: "subtract",
 				shape: "cylinder_x",
 				xMin: xStart,
@@ -5236,8 +6057,9 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 				centerY: c.center.u,
 				centerZ: c.center.v,
 				radius: c.radius,
-				isInternalFeature: true
-			});
+				isInternalFeature: true,
+				isInsideLoopContour: isInsideNonCircularLoop
+			} as any);
 		}
 	});
 	const dashedArcs = userEntities.filter((e) => e.type === "arc" && e.lineType === "thin_dashed" && !usedEntityIds.has(e.id));
@@ -5300,7 +6122,9 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 		}
 	});
 	const makeLoopOrPrismSubtract = (view: "front" | "top" | "left", lp: any, id: string, featureId: string, label: string, x1: number, x2: number, y1: number, y2: number, z1: number, z2: number) => {
-		const isSlanted = Boolean(lp.isSlantedPrism && Array.isArray(lp.points) && lp.points.length >= 3);
+		const hasArcSeg = Array.isArray(lp.segments) && lp.segments.some((s: any) => s.kind === "arc");
+		const bboxArea = Math.max(1, (lp.uMax - lp.uMin) * (lp.vMax - lp.vMin));
+		const isNonRectPoly = Array.isArray(lp.points) && lp.points.length >= 3 && (Boolean(lp.isSlantedPrism) || hasArcSeg || Math.abs((lp.area ?? bboxArea) - bboxArea) > Math.max(2.5, 0.04 * bboxArea));
 		const pAxis = view === "front" ? "Y" : view === "top" ? "Z" : "X";
 		const eAxis = view === "front" ? "y" : view === "top" ? "z" : "x";
 		return {
@@ -5308,11 +6132,12 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 			featureId,
 			label,
 			operation: "subtract",
-			shape: isSlanted ? "prism" : "box",
-			prismAxis: isSlanted ? pAxis : void 0,
-			extrudeAxis: isSlanted ? eAxis : void 0,
-			prismPolygon: isSlanted ? lp.points : void 0,
-			polygon2D: isSlanted ? lp.points : void 0,
+			shape: isNonRectPoly ? "prism" : "box",
+			prismAxis: isNonRectPoly ? pAxis : void 0,
+			extrudeAxis: isNonRectPoly ? eAxis : void 0,
+			prismPolygon: isNonRectPoly ? lp.points : void 0,
+			polygon2D: isNonRectPoly ? lp.points : void 0,
+			prismSegments: isNonRectPoly ? lp.segments : void 0,
 			xMin: x1,
 			xMax: x2,
 			yMin: y1,
@@ -5322,7 +6147,160 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 			isInternalFeature: true
 		};
 	};
+	// Pair two inner loops (e.g. concentric semicircles sharing a chord or nested polygons) with taperedDashedBands to build internal pyramid/half-frustum holes (operation: 'subtract')
+	const consumedTaperedLoops = new Set<any>();
+	const pairNestedLoopsWithTaperedBands = (view: "front" | "top" | "left", viewLoops: any[]) => {
+		for (let i = 0; i < viewLoops.length; i++) {
+			for (let j = i + 1; j < viewLoops.length; j++) {
+				const lpA = viewLoops[i];
+				const lpB = viewLoops[j];
+				if (consumedTaperedLoops.has(lpA) || consumedTaperedLoops.has(lpB)) continue;
+				const spanUA = lpA.uMax - lpA.uMin, spanUB = lpB.uMax - lpB.uMin;
+				const spanVA = lpA.vMax - lpA.vMin, spanVB = lpB.vMax - lpB.vMin;
+				if (Math.abs(spanUA - spanUB) < 1.5 && Math.abs(spanVA - spanVB) < 1.5) continue;
+				const lpSmall = (lpA.area ?? spanUA * spanVA) <= (lpB.area ?? spanUB * spanVB) ? lpA : lpB;
+				const lpBig = lpSmall === lpA ? lpB : lpA;
+				const sU1 = lpSmall.uMin, sU2 = lpSmall.uMax, sV1 = lpSmall.vMin, sV2 = lpSmall.vMax;
+				const bU1 = lpBig.uMin, bU2 = lpBig.uMax, bV1 = lpBig.vMin, bV2 = lpBig.vMax;
+				if (view === "front") {
+					const tbTopU = (slotsTop.taperedUBands || []).find((tb) =>
+						(Math.abs(tb.u1Min - sU1) <= PAIR_TOL && Math.abs(tb.u1Max - sU2) <= PAIR_TOL && Math.abs(tb.u2Min - bU1) <= PAIR_TOL && Math.abs(tb.u2Max - bU2) <= PAIR_TOL) ||
+						(Math.abs(tb.u2Min - sU1) <= PAIR_TOL && Math.abs(tb.u2Max - sU2) <= PAIR_TOL && Math.abs(tb.u1Min - bU1) <= PAIR_TOL && Math.abs(tb.u1Max - bU2) <= PAIR_TOL)
+					);
+					const tbLeftV = (slotsLeft.taperedVBands || []).find((tb) =>
+						(Math.abs(tb.v1Min - sV1) <= PAIR_TOL && Math.abs(tb.v1Max - sV2) <= PAIR_TOL && Math.abs(tb.v2Min - bV1) <= PAIR_TOL && Math.abs(tb.v2Max - bV2) <= PAIR_TOL) ||
+						(Math.abs(tb.v2Min - sV1) <= PAIR_TOL && Math.abs(tb.v2Max - sV2) <= PAIR_TOL && Math.abs(tb.v1Min - bV1) <= PAIR_TOL && Math.abs(tb.v1Max - bV2) <= PAIR_TOL)
+					);
+					if (tbTopU || tbLeftV) {
+						consumedTaperedLoops.add(lpSmall);
+						consumedTaperedLoops.add(lpBig);
+						const smallAtMin = tbTopU
+							? (Math.abs(tbTopU.u1Min - sU1) <= PAIR_TOL && Math.abs(tbTopU.u1Max - sU2) <= PAIR_TOL)
+							: (Math.abs(tbLeftV!.v1Min - sV1) <= PAIR_TOL && Math.abs(tbLeftV!.v1Max - sV2) <= PAIR_TOL);
+						const y1 = tbTopU ? tbTopU.v1 : tbLeftV!.u1;
+						const y2 = tbTopU ? tbTopU.v2 : tbLeftV!.u2;
+						const wTop = smallAtMin ? y1 : y2;
+						const topScale = Math.max(0.05, Math.min(0.95, (sU2 - sU1) > 1.5 && (bU2 - bU1) > 1.5 ? (sU2 - sU1) / (bU2 - bU1) : (sV2 - sV1) / Math.max(1.5, bV2 - bV1)));
+						const uApex = Math.abs(bU2 - sU2) <= 1.5 ? bU2 : Math.abs(bU1 - sU1) <= 1.5 ? bU1 : (0.5 * (sU1 + sU2) - topScale * 0.5 * (bU1 + bU2)) / Math.max(1e-3, 1 - topScale);
+						const vApex = Math.abs(bV2 - sV2) <= 1.5 ? bV2 : Math.abs(bV1 - sV1) <= 1.5 ? bV1 : (0.5 * (sV1 + sV2) - topScale * 0.5 * (bV1 + bV2)) / Math.max(1e-3, 1 - topScale);
+						pairedSubtracts.push({
+							id: `sub-tapered-pyramid-y-${i}-${j}`,
+							featureId: `taper_loop_y_${i}`,
+							label: `Tapered Frustum Cutout (${Math.round(bU2 - bU1)}→${Math.round(sU2 - sU1)})`,
+							operation: "subtract",
+							shape: "pyramid",
+							prismAxis: "Y",
+							extrudeAxis: "y",
+							prismPolygon: lpBig.points,
+							polygon2D: lpBig.points,
+							prismSegments: lpBig.segments,
+							apex3D: [uApex, wTop, vApex],
+							pyramidTopScale: topScale,
+							xMin: Math.min(sU1, bU1),
+							xMax: Math.max(sU2, bU2),
+							yMin: y1,
+							yMax: y2,
+							zMin: Math.min(sV1, bV1),
+							zMax: Math.max(sV2, bV2),
+							isInternalFeature: true,
+							isInsideLoopContour: true
+						} as any);
+					}
+				} else if (view === "top") {
+					const tbFrontU = (slotsFront.taperedUBands || []).find((tb) =>
+						(Math.abs(tb.u1Min - sU1) <= PAIR_TOL && Math.abs(tb.u1Max - sU2) <= PAIR_TOL && Math.abs(tb.u2Min - bU1) <= PAIR_TOL && Math.abs(tb.u2Max - bU2) <= PAIR_TOL) ||
+						(Math.abs(tb.u2Min - sU1) <= PAIR_TOL && Math.abs(tb.u2Max - sU2) <= PAIR_TOL && Math.abs(tb.u1Min - bU1) <= PAIR_TOL && Math.abs(tb.u1Max - bU2) <= PAIR_TOL)
+					);
+					const tbLeftU = (slotsLeft.taperedUBands || []).find((tb) =>
+						(Math.abs(tb.u1Min - sV1) <= PAIR_TOL && Math.abs(tb.u1Max - sV2) <= PAIR_TOL && Math.abs(tb.u2Min - bV1) <= PAIR_TOL && Math.abs(tb.u2Max - bV2) <= PAIR_TOL) ||
+						(Math.abs(tb.u2Min - sV1) <= PAIR_TOL && Math.abs(tb.u2Max - sV2) <= PAIR_TOL && Math.abs(tb.u1Min - bV1) <= PAIR_TOL && Math.abs(tb.u1Max - bV2) <= PAIR_TOL)
+					);
+					if (tbFrontU || tbLeftU) {
+						consumedTaperedLoops.add(lpSmall);
+						consumedTaperedLoops.add(lpBig);
+						const tb = tbFrontU || tbLeftU!;
+						const smallAtMin = tbFrontU
+							? (Math.abs(tbFrontU.u1Min - sU1) <= PAIR_TOL && Math.abs(tbFrontU.u1Max - sU2) <= PAIR_TOL)
+							: (Math.abs(tbLeftU!.u1Min - sV1) <= PAIR_TOL && Math.abs(tbLeftU!.u1Max - sV2) <= PAIR_TOL);
+						const wTop = smallAtMin ? tb.v1 : tb.v2;
+						const topScale = Math.max(0.05, Math.min(0.95, (sU2 - sU1) > 1.5 && (bU2 - bU1) > 1.5 ? (sU2 - sU1) / (bU2 - bU1) : (sV2 - sV1) / Math.max(1.5, bV2 - bV1)));
+						const uApex = Math.abs(bU2 - sU2) <= 1.5 ? bU2 : Math.abs(bU1 - sU1) <= 1.5 ? bU1 : (0.5 * (sU1 + sU2) - topScale * 0.5 * (bU1 + bU2)) / Math.max(1e-3, 1 - topScale);
+						const vApex = Math.abs(bV2 - sV2) <= 1.5 ? bV2 : Math.abs(bV1 - sV1) <= 1.5 ? bV1 : (0.5 * (sV1 + sV2) - topScale * 0.5 * (bV1 + bV2)) / Math.max(1e-3, 1 - topScale);
+						pairedSubtracts.push({
+							id: `sub-tapered-pyramid-z-${i}-${j}`,
+							featureId: `taper_loop_z_${i}`,
+							label: `Tapered Frustum Cutout (${Math.round(bU2 - bU1)}→${Math.round(sU2 - sU1)})`,
+							operation: "subtract",
+							shape: "pyramid",
+							prismAxis: "Z",
+							extrudeAxis: "z",
+							prismPolygon: lpBig.points,
+							polygon2D: lpBig.points,
+							prismSegments: lpBig.segments,
+							apex3D: [uApex, vApex, wTop],
+							pyramidTopScale: topScale,
+							xMin: Math.min(sU1, bU1),
+							xMax: Math.max(sU2, bU2),
+							yMin: Math.min(sV1, bV1),
+							yMax: Math.max(sV2, bV2),
+							zMin: tb.v1,
+							zMax: tb.v2,
+							isInternalFeature: true,
+							isInsideLoopContour: true
+						} as any);
+					}
+				} else if (view === "left") {
+					const tbFrontV = (slotsFront.taperedVBands || []).find((tb) =>
+						(Math.abs(tb.v1Min - sV1) <= PAIR_TOL && Math.abs(tb.v1Max - sV2) <= PAIR_TOL && Math.abs(tb.v2Min - bV1) <= PAIR_TOL && Math.abs(tb.v2Max - bV2) <= PAIR_TOL) ||
+						(Math.abs(tb.v2Min - sV1) <= PAIR_TOL && Math.abs(tb.v2Max - sV2) <= PAIR_TOL && Math.abs(tb.v1Min - bV1) <= PAIR_TOL && Math.abs(tb.v1Max - bV2) <= PAIR_TOL)
+					);
+					const tbTopV = (slotsTop.taperedVBands || []).find((tb) =>
+						(Math.abs(tb.v1Min - sU1) <= PAIR_TOL && Math.abs(tb.v1Max - sU2) <= PAIR_TOL && Math.abs(tb.v2Min - bU1) <= PAIR_TOL && Math.abs(tb.v2Max - bU2) <= PAIR_TOL) ||
+						(Math.abs(tb.v2Min - sU1) <= PAIR_TOL && Math.abs(tb.v2Max - sU2) <= PAIR_TOL && Math.abs(tb.v1Min - bU1) <= PAIR_TOL && Math.abs(tb.v1Max - bU2) <= PAIR_TOL)
+					);
+					if (tbFrontV || tbTopV) {
+						consumedTaperedLoops.add(lpSmall);
+						consumedTaperedLoops.add(lpBig);
+						const tb = tbFrontV || tbTopV!;
+						const smallAtMin = tbFrontV
+							? (Math.abs(tbFrontV.v1Min - sV1) <= PAIR_TOL && Math.abs(tbFrontV.v1Max - sV2) <= PAIR_TOL)
+							: (Math.abs(tbTopV!.v1Min - sU1) <= PAIR_TOL && Math.abs(tbTopV!.v1Max - sU2) <= PAIR_TOL);
+						const wTop = smallAtMin ? tb.u1 : tb.u2;
+						const topScale = Math.max(0.05, Math.min(0.95, (sU2 - sU1) > 1.5 && (bU2 - bU1) > 1.5 ? (sU2 - sU1) / (bU2 - bU1) : (sV2 - sV1) / Math.max(1.5, bV2 - bV1)));
+						const uApex = Math.abs(bU2 - sU2) <= 1.5 ? bU2 : Math.abs(bU1 - sU1) <= 1.5 ? bU1 : (0.5 * (sU1 + sU2) - topScale * 0.5 * (bU1 + bU2)) / Math.max(1e-3, 1 - topScale);
+						const vApex = Math.abs(bV2 - sV2) <= 1.5 ? bV2 : Math.abs(bV1 - sV1) <= 1.5 ? bV1 : (0.5 * (sV1 + sV2) - topScale * 0.5 * (bV1 + bV2)) / Math.max(1e-3, 1 - topScale);
+						pairedSubtracts.push({
+							id: `sub-tapered-pyramid-x-${i}-${j}`,
+							featureId: `taper_loop_x_${i}`,
+							label: `Tapered Frustum Cutout (${Math.round(bU2 - bU1)}→${Math.round(sU2 - sU1)})`,
+							operation: "subtract",
+							shape: "pyramid",
+							prismAxis: "X",
+							extrudeAxis: "x",
+							prismPolygon: lpBig.points,
+							polygon2D: lpBig.points,
+							prismSegments: lpBig.segments,
+							apex3D: [wTop, uApex, vApex],
+							pyramidTopScale: topScale,
+							xMin: tb.u1,
+							xMax: tb.u2,
+							yMin: Math.min(sU1, bU1),
+							yMax: Math.max(sU2, bU2),
+							zMin: Math.min(sV1, bV1),
+							zMax: Math.max(sV2, bV2),
+							isInternalFeature: true,
+							isInsideLoopContour: true
+						} as any);
+					}
+				}
+			}
+		}
+	};
+	pairNestedLoopsWithTaperedBands("front", innerLoopsFront);
+	pairNestedLoopsWithTaperedBands("top", innerLoopsTop);
+	pairNestedLoopsWithTaperedBands("left", innerLoopsLeft);
 	innerLoopsFront.forEach((fLoop: any, idx) => {
+		if (consumedTaperedLoops.has(fLoop)) return;
 		if (fLoop._vBandIdx !== void 0 && usedFrontVBands.has(fLoop._vBandIdx)) return;
 		let matchedDepth = false;
 		const padXMin = fLoop.uMin <= xMin + 1.5 ? xMin - 2 : fLoop.uMin;
@@ -5487,6 +6465,7 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 		});
 	});
 	innerLoopsTop.forEach((tLoop: any, idx) => {
+		if (consumedTaperedLoops.has(tLoop)) return;
 		if (tLoop._vBandIdx !== void 0 && usedTopVBands.has(tLoop._vBandIdx)) return;
 		if (pairedSubtracts.some((p) => Math.abs(p.xMin - tLoop.uMin) <= PAIR_TOL && Math.abs(p.xMax - tLoop.uMax) <= PAIR_TOL && Math.abs(p.yMin - tLoop.vMin) <= PAIR_TOL && Math.abs(p.yMax - tLoop.vMax) <= PAIR_TOL)) return;
 		let matchedDepth = false;
@@ -5515,7 +6494,6 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 			}
 		});
 		const matchedFrontBands = slotsFront.uBands.filter((fBand, bIdx) => {
-			if (usedFrontUBands.has(bIdx)) return false;
 			if (Math.abs(fBand.u1 - tLoop.uMin) <= PAIR_TOL && Math.abs(fBand.u2 - tLoop.uMax) <= PAIR_TOL) {
 				usedFrontUBands.add(bIdx);
 				return true;
@@ -5523,6 +6501,11 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 			return false;
 		});
 		if (matchedFrontBands.length > 0) {
+			slotsFront.uSlots.forEach((fSlot, sIdx) => {
+				if (Math.abs(fSlot.uMin - tLoop.uMin) <= PAIR_TOL && Math.abs(fSlot.uMax - tLoop.uMax) <= PAIR_TOL) {
+					usedFrontUSlots.add(sIdx);
+				}
+			});
 			matchedDepth = true;
 			if (tLoop._vBandIdx !== void 0) usedTopVBands.add(tLoop._vBandIdx);
 			const { dMin: slotZMin, dMax: slotZMax } = resolveBandCutSpan(matchedFrontBands, solidLoopsFront, circlesFront, bFront, tLoop.uMin, tLoop.uMax, zMin, zMax);
@@ -5561,7 +6544,6 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 			}
 		});
 		const matchedLeftBands = slotsLeft.uBands.filter((lBand, bIdx) => {
-			if (usedLeftUBands.has(bIdx)) return false;
 			if (Math.abs(lBand.u1 - tLoop.vMin) <= PAIR_TOL && Math.abs(lBand.u2 - tLoop.vMax) <= PAIR_TOL) {
 				usedLeftUBands.add(bIdx);
 				return true;
@@ -5569,6 +6551,11 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 			return false;
 		});
 		if (matchedLeftBands.length > 0) {
+			slotsLeft.uSlots.forEach((lSlot, sIdx) => {
+				if (Math.abs(lSlot.uMin - tLoop.vMin) <= PAIR_TOL && Math.abs(lSlot.uMax - tLoop.vMax) <= PAIR_TOL) {
+					usedLeftUSlots.add(sIdx);
+				}
+			});
 			matchedDepth = true;
 			if (tLoop._vBandIdx !== void 0) usedTopVBands.add(tLoop._vBandIdx);
 			const { dMin: slotZMin, dMax: slotZMax } = resolveBandCutSpan(matchedLeftBands, solidLoopsLeft, circlesLeft, bLeft, tLoop.vMin, tLoop.vMax, zMin, zMax);
@@ -5617,6 +6604,7 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 		});
 	});
 	innerLoopsLeft.forEach((lLoop: any, idx) => {
+		if (consumedTaperedLoops.has(lLoop)) return;
 		if (lLoop._vBandIdx !== void 0 && usedLeftVBands.has(lLoop._vBandIdx)) return;
 		if (pairedSubtracts.some((p) => Math.abs(p.yMin - lLoop.uMin) <= PAIR_TOL && Math.abs(p.yMax - lLoop.uMax) <= PAIR_TOL && Math.abs(p.zMin - lLoop.vMin) <= PAIR_TOL && Math.abs(p.zMax - lLoop.vMax) <= PAIR_TOL)) return;
 		let matchedDepth = false;
@@ -5719,6 +6707,8 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 	});
 	slotsFront.uSlots.forEach((fSlot, sIdx) => {
 		if (usedFrontUSlots.has(sIdx)) return;
+		if (innerLoopsTop.some((lp) => Math.abs(lp.uMin - fSlot.uMin) <= PAIR_TOL && Math.abs(lp.uMax - fSlot.uMax) <= PAIR_TOL)) return;
+		if (pairedSubtracts.some((p) => Math.abs(p.xMin - fSlot.uMin) <= PAIR_TOL && Math.abs(p.xMax - fSlot.uMax) <= PAIR_TOL)) return;
 		const z1 = fSlot.openSide === "vMin" || fSlot.vMin <= zMin + 1.5 ? zMin - 2 : fSlot.vMin;
 		const z2 = fSlot.openSide === "vMax" || fSlot.vMax >= zMax - 1.5 ? zMax + 2 : fSlot.vMax;
 		const x1 = fSlot.openSide === "uMin" || fSlot.uMin <= xMin + 1.5 ? xMin - 2 : fSlot.uMin;
@@ -5740,6 +6730,8 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 	});
 	slotsTop.uSlots.forEach((tSlot, sIdx) => {
 		if (usedTopUSlots.has(sIdx)) return;
+		if (innerLoopsFront.some((lp) => Math.abs(lp.uMin - tSlot.uMin) <= PAIR_TOL && Math.abs(lp.uMax - tSlot.uMax) <= PAIR_TOL)) return;
+		if (pairedSubtracts.some((p) => Math.abs(p.xMin - tSlot.uMin) <= PAIR_TOL && Math.abs(p.xMax - tSlot.uMax) <= PAIR_TOL)) return;
 		const y1 = tSlot.openSide === "vMin" || tSlot.vMin <= yMin + 1.5 ? yMin - 2 : tSlot.vMin;
 		const y2 = tSlot.openSide === "vMax" || tSlot.vMax >= yMax - 1.5 ? yMax + 2 : tSlot.vMax;
 		const x1 = tSlot.openSide === "uMin" || tSlot.uMin <= xMin + 1.5 ? xMin - 2 : tSlot.uMin;
@@ -5761,6 +6753,8 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 	});
 	slotsLeft.uSlots.forEach((lSlot, sIdx) => {
 		if (usedLeftUSlots.has(sIdx)) return;
+		if (innerLoopsTop.some((lp) => Math.abs(lp.vMin - lSlot.uMin) <= PAIR_TOL && Math.abs(lp.vMax - lSlot.uMax) <= PAIR_TOL)) return;
+		if (pairedSubtracts.some((p) => Math.abs(p.yMin - lSlot.uMin) <= PAIR_TOL && Math.abs(p.yMax - lSlot.uMax) <= PAIR_TOL)) return;
 		const z1 = lSlot.openSide === "vMin" || lSlot.vMin <= zMin + 1.5 ? zMin - 2 : lSlot.vMin;
 		const z2 = lSlot.openSide === "vMax" || lSlot.vMax >= zMax - 1.5 ? zMax + 2 : lSlot.vMax;
 		const y1 = lSlot.openSide === "uMin" || lSlot.uMin <= yMin + 1.5 ? yMin - 2 : lSlot.uMin;
@@ -5782,18 +6776,24 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 	});
 	slotsFront.uBands.forEach((fBand: any, bIdx) => {
 		if (usedFrontUBands.has(bIdx)) return;
+		if (innerLoopsTop.some((lp) => Math.abs(lp.uMin - fBand.u1) <= PAIR_TOL && Math.abs(lp.uMax - fBand.u2) <= PAIR_TOL)) return;
+		if (pairedSubtracts.some((p) => Math.abs(p.xMin - fBand.u1) <= PAIR_TOL && Math.abs(p.xMax - fBand.u2) <= PAIR_TOL)) return;
 		const { dMin: z1, dMax: z2 } = resolveBandCutSpan([fBand], solidLoopsFront, circlesFront, bFront, fBand.u1, fBand.u2, zMin, zMax);
 		const lp = makeBandLoop(fBand.u1, fBand.u2, z1, z2, fBand.slantedPoly);
 		pairedSubtracts.push(makeLoopOrPrismSubtract("front", lp, `sub-unpaired-fuband-${bIdx}`, `uband_f_${bIdx}`, `Through Slot (${Math.round(fBand.u2 - fBand.u1)})`, fBand.u1, fBand.u2, yMin - 2, yMax + 2, z1, z2));
 	});
 	slotsTop.uBands.forEach((tBand: any, bIdx) => {
 		if (usedTopUBands.has(bIdx)) return;
+		if (innerLoopsFront.some((lp) => Math.abs(lp.uMin - tBand.u1) <= PAIR_TOL && Math.abs(lp.uMax - tBand.u2) <= PAIR_TOL)) return;
+		if (pairedSubtracts.some((p) => Math.abs(p.xMin - tBand.u1) <= PAIR_TOL && Math.abs(p.xMax - tBand.u2) <= PAIR_TOL)) return;
 		const { dMin: y1, dMax: y2 } = resolveBandCutSpan([tBand], solidLoopsTop, circlesTop, bTop, tBand.u1, tBand.u2, yMin, yMax);
 		const lp = makeBandLoop(tBand.u1, tBand.u2, y1, y2, tBand.slantedPoly);
 		pairedSubtracts.push(makeLoopOrPrismSubtract("top", lp, `sub-unpaired-tuband-${bIdx}`, `uband_t_${bIdx}`, `Through Slot (${Math.round(tBand.u2 - tBand.u1)})`, tBand.u1, tBand.u2, y1, y2, zMin - 2, zMax + 2));
 	});
 	slotsLeft.uBands.forEach((lBand: any, bIdx) => {
 		if (usedLeftUBands.has(bIdx)) return;
+		if (innerLoopsTop.some((lp) => Math.abs(lp.vMin - lBand.u1) <= PAIR_TOL && Math.abs(lp.vMax - lBand.u2) <= PAIR_TOL)) return;
+		if (pairedSubtracts.some((p) => Math.abs(p.yMin - lBand.u1) <= PAIR_TOL && Math.abs(p.yMax - lBand.u2) <= PAIR_TOL)) return;
 		const { dMin: z1, dMax: z2 } = resolveBandCutSpan([lBand], solidLoopsLeft, circlesLeft, bLeft, lBand.u1, lBand.u2, zMin, zMax);
 		const lp = makeBandLoop(lBand.u1, lBand.u2, z1, z2, lBand.slantedPoly);
 		pairedSubtracts.push(makeLoopOrPrismSubtract("left", lp, `sub-unpaired-luband-${bIdx}`, `uband_l_${bIdx}`, `Through Slot (${Math.round(lBand.u2 - lBand.u1)})`, xMin - 2, xMax + 2, lBand.u1, lBand.u2, z1, z2));
@@ -5807,9 +6807,9 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 		const hasAnyDashedInKnownViews = userEntities.some((e) => (e.view === v1 || e.view === v2) && e.lineType === "thin_dashed");
 		// Check 1: Intercept illegal through-holes when no dashed lines exist and the hole matches a frustum cap or outer flat step
 		let removedIllegalHole = false;
-		prims = prims.filter((p) => {
+		prims = prims.filter((p: any) => {
 			if (p.operation !== "subtract") return true;
-			if (p.id.startsWith("sub-hole-")) {
+			if (p.id.startsWith("sub-hole-") && !p.isInsideLoopContour) {
 				if (hasConeOrFrustum && !hasAnyDashedInKnownViews) {
 					removedIllegalHole = true;
 					return false;
@@ -5936,15 +6936,16 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 		return { healedPrims: prims, healedEntities: derived };
 	};
 
-	const buildSolution = (id, title, subtitle, description, extraPrims) => {
+	const buildSolution = (id, title, subtitle, description, extraPrims, overrideSubtracts?: Primitive3D[]) => {
 		const rawPrims = [
 			...basePrimitives,
-			...pairedSubtracts,
+			...(overrideSubtracts ?? pairedSubtracts),
 			...extraPrims
 		];
 		const clonedPrims = JSON.parse(JSON.stringify(rawPrims));
 		const rawDerived = projectCSGSolidToView(targetView, clonedPrims, bounds);
 		const { healedPrims, healedEntities } = validateAndHealDerivation(clonedPrims, rawDerived);
+		const cleanedEntities = cleanMicroSolidFragmentsInDerivedEntities(healedEntities);
 		return {
 			id,
 			title,
@@ -5952,10 +6953,112 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 			description,
 			confidence: "CSG",
 			primitives3D: healedPrims,
-			derivedEntities: healedEntities,
+			derivedEntities: cleanedEntities,
 			projectionSteps: []
 		};
 	};
+	if (underConstrainedNestedCircles.length > 0 && underConstrainedLoops.length === 0) {
+		const outerHoleIds = new Set(underConstrainedNestedCircles.map((nc) => nc.outerHoleId));
+		// Candidate 1 (Default): Front/Top Half-Depth Counterbore + Center Through-Hole (already in pairedSubtracts)
+		const sol1 = buildSolution(
+			"sol_nested_counterbore_front",
+			"候选解 1：同轴阶梯沉头通孔（前/顶面锪平沉孔）",
+			"外层内圆 R1 为半深盲沉孔 + 内层圆 R2 为全贯通孔",
+			"依据包含树深度：depth=1 外层内圆在基体前/顶侧形成半深阶梯沉孔（Counterbore），depth=2 内层圆形成中心全贯通孔，严禁外圆全贯通吞没内圆。",
+			[]
+		);
+		// Candidate 2: Back/Bottom Half-Depth Counterbore + Center Through-Hole
+		const backSubtracts = pairedSubtracts.map((p) => {
+			if (!outerHoleIds.has(p.id)) return p;
+			if (p.shape === "cylinder_y") {
+				const yMid = Number((0.5 * (yMin + yMax)).toFixed(1));
+				return { ...p, yMin: yMid, yMax: yMax + 2 };
+			}
+			if (p.shape === "cylinder_z") {
+				const zMid = Number((0.5 * (zMin + zMax)).toFixed(1));
+				return { ...p, zMin: zMin - 2, zMax: zMid };
+			}
+			const xMid = Number((0.5 * (xMin + xMax)).toFixed(1));
+			return { ...p, xMin: xMid, xMax: xMax + 2 };
+		});
+		const sol2 = buildSolution(
+			"sol_nested_counterbore_back",
+			"候选解 2：同轴阶梯沉头通孔（后/底面反锪沉孔）",
+			"外层内圆 R1 为后置半深沉孔 + 内层圆 R2 为全贯通孔",
+			"depth=1 外层内圆从基体后/底侧切入一半深度形成反锪阶梯盲孔，depth=2 内层圆贯穿整个基体厚度。",
+			[],
+			backSubtracts
+		);
+		// Candidate 3: Outward Cylindrical Boss (R1 add) + Center Through-Hole (R2 subtract)
+		const bossRemovedSubtracts = pairedSubtracts.filter((p) => !outerHoleIds.has(p.id));
+		const bossAddPrims: Primitive3D[] = underConstrainedNestedCircles.map((nc, i) => {
+			const c = nc.outerCircle;
+			if (nc.view === "front") {
+				const bossDepth = Math.max(8, Math.round(0.25 * (yMax - yMin)));
+				return {
+					id: `boss-nested-y-${i}`,
+					featureId: `boss_ny_${i}`,
+					label: `Boss Ø${Math.round(c.radius * 2)}`,
+					operation: "add",
+					shape: "cylinder_y",
+					xMin: c.center.u - c.radius,
+					xMax: c.center.u + c.radius,
+					yMin: yMin - bossDepth,
+					yMax: yMin + 2,
+					zMin: c.center.v - c.radius,
+					zMax: c.center.v + c.radius,
+					centerX: c.center.u,
+					centerZ: c.center.v,
+					radius: c.radius
+				} as any;
+			}
+			if (nc.view === "top") {
+				const bossDepth = Math.max(8, Math.round(0.25 * (zMax - zMin)));
+				return {
+					id: `boss-nested-z-${i}`,
+					featureId: `boss_nz_${i}`,
+					label: `Boss Ø${Math.round(c.radius * 2)}`,
+					operation: "add",
+					shape: "cylinder_z",
+					xMin: c.center.u - c.radius,
+					xMax: c.center.u + c.radius,
+					yMin: c.center.v - c.radius,
+					yMax: c.center.v + c.radius,
+					zMin: zMax - 2,
+					zMax: zMax + bossDepth,
+					centerX: c.center.u,
+					centerY: c.center.v,
+					radius: c.radius
+				} as any;
+			}
+			const bossDepth = Math.max(8, Math.round(0.25 * (xMax - xMin)));
+			return {
+				id: `boss-nested-x-${i}`,
+				featureId: `boss_nx_${i}`,
+				label: `Boss Ø${Math.round(c.radius * 2)}`,
+				operation: "add",
+				shape: "cylinder_x",
+				xMin: xMin - bossDepth,
+				xMax: xMin + 2,
+				yMin: c.center.u - c.radius,
+				yMax: c.center.u + c.radius,
+				zMin: c.center.v - c.radius,
+				zMax: c.center.v + c.radius,
+				centerY: c.center.u,
+				centerZ: c.center.v,
+				radius: c.radius
+			} as any;
+		});
+		const sol3 = buildSolution(
+			"sol_nested_boss_hole",
+			"候选解 3：向外圆柱凸台 + 中心全贯通孔",
+			"外层内圆 R1 向外凸出形成圆柱凸台 + 内层圆 R2 为中心通孔",
+			"depth=1 外层内圆代表从基体表面向外凸出的圆柱凸台（Boss Add），depth=2 内层圆代表贯穿凸台与基体的中心通孔。",
+			bossAddPrims,
+			bossRemovedSubtracts
+		);
+		return [sol1, sol2, sol3];
+	}
 	if (underConstrainedLoops.length > 0) {
 		const resolvePairedSpanForLoop = (view, loop) => {
 			if (view === "front") {
@@ -6025,16 +7128,42 @@ export function deriveFromCustomViews(entities, knownViews, targetView) {
 				view === "top" ? wEnd : padV2
 			);
 		};
+		const hasNestedChildLoopInUC = (view: string, lp: any) =>
+			underConstrainedLoops.some(
+				(other) =>
+					other.view === view &&
+					other.loop !== lp &&
+					(other.loop.area ?? 0) < (lp.area ?? 0) - 2 &&
+					other.loop.uMin >= lp.uMin - 1.5 &&
+					other.loop.uMax <= lp.uMax + 1.5 &&
+					other.loop.vMin >= lp.vMin - 1.5 &&
+					other.loop.vMax <= lp.vMax + 1.5
+			);
 		const pairedSpanPrims = underConstrainedLoops.map(({ view, loop }, i) => {
+			if (hasNestedChildLoopInUC(view, loop)) {
+				const wStart = view === "front" ? yMin - 2 : view === "top" ? Number((.5 * (zMin + zMax)).toFixed(1)) : xMin - 2;
+				const wEnd = view === "front" ? Number((.5 * (yMin + yMax)).toFixed(1)) : view === "top" ? zMax + 2 : Number((.5 * (xMin + xMax)).toFixed(1));
+				return makeLoopSubtractPrim(view, loop, wStart, wEnd, `uc_paired_${i}`, "Counterbore Cutout");
+			}
 			const { w1, w2 } = resolvePairedSpanForLoop(view, loop);
 			return makeLoopSubtractPrim(view, loop, w1, w2, `uc_paired_${i}`, "L-Bend / Paired-Span Channel");
 		});
 		const throughPrims = underConstrainedLoops.map(({ view, loop }, i) => {
+			if (hasNestedChildLoopInUC(view, loop)) {
+				const wStart = view === "front" ? yMin - 2 : view === "top" ? Number((.5 * (zMin + zMax)).toFixed(1)) : xMin - 2;
+				const wEnd = view === "front" ? Number((.5 * (yMin + yMax)).toFixed(1)) : view === "top" ? zMax + 2 : Number((.5 * (xMin + xMax)).toFixed(1));
+				return makeLoopSubtractPrim(view, loop, wStart, wEnd, `uc_through_${i}`, "Counterbore Step Cutout");
+			}
 			const wStart = view === "front" ? yMin - 2 : view === "top" ? zMin - 2 : xMin - 2;
 			const wEnd = view === "front" ? yMax + 2 : view === "top" ? zMax + 2 : xMax + 2;
 			return makeLoopSubtractPrim(view, loop, wStart, wEnd, `uc_through_${i}`, "Through Cutout");
 		});
 		const blindPrims = underConstrainedLoops.map(({ view, loop }, i) => {
+			if (!hasNestedChildLoopInUC(view, loop) && underConstrainedLoops.some((other) => other.view === view && other.loop !== loop && hasNestedChildLoopInUC(view, other.loop))) {
+				const wStart = view === "front" ? yMin - 2 : view === "top" ? zMin - 2 : xMin - 2;
+				const wEnd = view === "front" ? yMax + 2 : view === "top" ? zMax + 2 : xMax + 2;
+				return makeLoopSubtractPrim(view, loop, wStart, wEnd, `uc_blind_${i}`, "Inner Through Cutout");
+			}
 			const wStart = view === "front" ? yMin - 2 : view === "top" ? Number((.5 * (zMin + zMax)).toFixed(1)) : xMin - 2;
 			const wEnd = view === "front" ? Number((.5 * (yMin + yMax)).toFixed(1)) : view === "top" ? zMax + 2 : Number((.5 * (xMin + xMax)).toFixed(1));
 			return makeLoopSubtractPrim(view, loop, wStart, wEnd, `uc_blind_${i}`, "Front Half-Depth Blind Slot");
@@ -6375,8 +7504,8 @@ export function diagnoseThreeViews(entities, knownViews, lang = "zh-CN") {
 			}
 			const targetUserEnts = userEntities.filter((e) => e.view === targetView && e.lineType !== "construction");
 			if (targetUserEnts.length > 0 && primarySol.derivedEntities.length > 0) {
-				const stdDashed = primarySol.derivedEntities.filter((e) => e.lineType === "thin_dashed" && e.type === "line");
-				const curDashed = targetUserEnts.filter((e) => e.lineType === "thin_dashed" && e.type === "line");
+				const stdDashed = primarySol.derivedEntities.filter((e): e is CadLineEntity => e.lineType === "thin_dashed" && e.type === "line");
+				const curDashed = targetUserEnts.filter((e): e is CadLineEntity => e.lineType === "thin_dashed" && e.type === "line");
 				const missingDashed = stdDashed.filter((sd) => !curDashed.some((cd) => dist2D(cd.p1, sd.p1) <= 2 && dist2D(cd.p2, sd.p2) <= 2 || dist2D(cd.p1, sd.p2) <= 2 && dist2D(cd.p2, sd.p1) <= 2));
 				if (missingDashed.length > 0) issues.push({
 					id: `diag-target-missing-hlr-${targetView}`,

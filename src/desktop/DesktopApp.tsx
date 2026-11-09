@@ -1001,9 +1001,6 @@ export const DesktopApp: React.FC<DesktopAppProps> = ({
             Z: {sharedCursor.z !== null ? sharedCursor.z.toFixed(1) : '0.0'}
           </span>
         </div>
-        <div className="text-[10px] text-[#64748B]">
-          GB/T 4458.1 第一角投影工作站 · 快捷键 [1-4] 切换线型 · [V/H/L/R/C/A/T/E] 绘图工具
-        </div>
       </footer>
     </div>
   );

@@ -161,9 +161,17 @@ ${JSON.stringify(diagnostics)}`;
     });
   });
 
+  const httpServer = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Dor.ED Server running on http://0.0.0.0:${PORT}`);
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
+        watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -174,10 +182,6 @@ ${JSON.stringify(diagnostics)}`;
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
-
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Dor.ED Server running on http://0.0.0.0:${PORT}`);
-  });
 }
 
 startServer();

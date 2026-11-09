@@ -1,6 +1,0 @@
-{
-  "summary":  "Physical-level isolation refactoring plan separating DesktopApp (PC 4-quadrant workstation) and MobileApp (portrait 9:19.5 touch CAD engine with collapsible cross-view alignment reference strip, dual-mode touch drawing, 36px offset crosshair, two-finger pinch-zoom/pan, and dual download modal) while keeping the shared mathematical geometry kernel untouched.",
-  "updatedAt":  "2026-11-07T12:39:35.008071872Z",
-  "requestFeedback":  true,
-  "userFacing":  true
-}

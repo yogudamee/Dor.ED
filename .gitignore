@@ -1,8 +1,46 @@
+# Dependencies & lock/cache files
 node_modules/
+.npm/
+.cache/
+.vite/
+*.tsbuildinfo
+
+# Build & packaging outputs (Vite / Electron / Capacitor Android)
 build/
 dist/
+dist-electron/
+release/
+out/
 coverage/
-.DS_Store
-*.log
+android/
+ios/
+*.exe
+*.msi
+*.dmg
+*.AppImage
+*.apk
+*.aab
+
+# AI Studio & platform metadata (non-core runtime files)
+.aistudio/
+metadata.json
+
+# Environment & secrets
 .env*
 !.env.example
+
+# IDE, Editor & OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs & diagnostic dumps
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

@@ -12,6 +12,12 @@ import {
   Primitive3D,
   ViewType,
 } from "../types/cad";
+import {
+  primitiveToGeneralizedLoft,
+  extractGeneralizedLoftEdgesAndSilhouettes,
+  extractSlantedPlanesFromPrimitive,
+  computePlaneQuadricSectionSegments,
+} from "../kernel";
 
 export function dist2D(a: Point2D, b: Point2D): number {
   return Math.hypot(a.u - b.u, a.v - b.v);
@@ -62,12 +68,146 @@ export function pointInPolygon2D(pt, poly) {
 	return wn !== 0;
 }
 /**
+ * Layer 1 Homologous Arc Sampler:
+ * Samples an arc using the exact same counter-clockwise parameter formula (startAngle -> endAngle)
+ * as 2D Canvas/SVG rendering (expandEntityToSegments). Never inverts the arc trajectory!
+ */
+export function sampleArcPoints(
+	arc: { center: Point2D; radius: number; startAngle: number; endAngle: number },
+	numSegments = 48
+): Point2D[] {
+	const n = Math.max(8, numSegments);
+	let span = normalizeAngle(arc.endAngle - arc.startAngle);
+	if (span <= 1e-4) span = Math.PI * 2;
+	const pts: Point2D[] = [];
+	for (let k = 0; k <= n; k++) {
+		const ang = arc.startAngle + (k / n) * span;
+		pts.push({
+			u: arc.center.u + arc.radius * Math.cos(ang),
+			v: arc.center.v + arc.radius * Math.sin(ang)
+		});
+	}
+	return pts;
+}
+
+/**
+ * Chains line and arc segments strictly head-to-tail into a non-self-intersecting dense 2D polygon
+ * using canonical arc coordinates from sampleArcPoints.
+ */
+export function chainSegmentsIntoDensePolygon(
+	segments?: LoopCurveSegment2D[],
+	fallbackPoly?: Point2D[],
+	numArcSegments = 48
+): Point2D[] {
+	if (!segments || segments.length === 0) return fallbackPoly || [];
+	const items = segments
+		.map((seg) => {
+			if (
+				seg.kind === "arc" &&
+				seg.center &&
+				seg.radius !== void 0 &&
+				seg.startAngle !== void 0 &&
+				seg.endAngle !== void 0
+			) {
+				const forwardPts = sampleArcPoints(
+					{
+						center: seg.center,
+						radius: seg.radius,
+						startAngle: seg.startAngle,
+						endAngle: seg.endAngle
+					},
+					numArcSegments
+				);
+				return {
+					forwardPts,
+					startPt: forwardPts[0],
+					endPt: forwardPts[forwardPts.length - 1]
+				};
+			}
+			const p1 = seg.p1;
+			const p2 = seg.p2;
+			if (!p1 || !p2) return null;
+			return {
+				forwardPts: [p1, p2],
+				startPt: p1,
+				endPt: p2
+			};
+		})
+		.filter((it): it is { forwardPts: Point2D[]; startPt: Point2D; endPt: Point2D } => it !== null);
+
+	if (items.length === 0) return fallbackPoly || [];
+
+	const used = new Array(items.length).fill(false);
+	const dense: Point2D[] = [];
+	const pushPts = (pts: Point2D[]) => {
+		for (const p of pts) {
+			if (dense.length === 0 || dist2D(dense[dense.length - 1], p) > 1e-3) {
+				dense.push({ u: p.u, v: p.v });
+			}
+		}
+	};
+
+	used[0] = true;
+	let firstForward = true;
+	if (items.length >= 2) {
+		const dEndToNext = Math.min(
+			...items.slice(1).map((it) => Math.min(dist2D(items[0].endPt, it.startPt), dist2D(items[0].endPt, it.endPt)))
+		);
+		const dStartToNext = Math.min(
+			...items.slice(1).map((it) => Math.min(dist2D(items[0].startPt, it.startPt), dist2D(items[0].startPt, it.endPt)))
+		);
+		if (dStartToNext + 1e-3 < dEndToNext) {
+			firstForward = false;
+		}
+	}
+	if (firstForward) {
+		pushPts(items[0].forwardPts);
+	} else {
+		pushPts([...items[0].forwardPts].reverse());
+	}
+
+	for (let step = 1; step < items.length; step++) {
+		const currPt = dense[dense.length - 1];
+		let bestIdx = -1;
+		let bestReverse = false;
+		let bestDist = Infinity;
+		for (let i = 0; i < items.length; i++) {
+			if (used[i]) continue;
+			const dStart = dist2D(currPt, items[i].startPt);
+			const dEnd = dist2D(currPt, items[i].endPt);
+			if (dStart < bestDist) {
+				bestDist = dStart;
+				bestIdx = i;
+				bestReverse = false;
+			}
+			if (dEnd < bestDist) {
+				bestDist = dEnd;
+				bestIdx = i;
+				bestReverse = true;
+			}
+		}
+		if (bestIdx === -1) break;
+		used[bestIdx] = true;
+		const chosen = items[bestIdx];
+		pushPts(bestReverse ? [...chosen.forwardPts].reverse() : chosen.forwardPts);
+	}
+
+	if (dense.length > 2 && dist2D(dense[0], dense[dense.length - 1]) <= 1e-2) {
+		dense.pop();
+	}
+	return dense.length >= 3 ? dense : fallbackPoly || [];
+}
+
+/**
 * Exact 2D Signed Distance Function for arbitrary closed polygon / curved loop (with analytical circular arcs):
 * Negative inside, positive outside, 0 on boundary.
 */
 export function curvedLoopSignedDist2D(pt, poly, segments) {
-	if (poly.length < 3) return 1e6;
+	if ((!poly || poly.length < 3) && (!segments || segments.length === 0)) return 1e6;
 	if (segments && segments.length > 0) {
+		const hasArc = segments.some((s) => s.kind === "arc");
+		const evalPoly = hasArc && (!poly || poly.length < 16) ? chainSegmentsIntoDensePolygon(segments, poly, 36) : poly;
+		if (!evalPoly || evalPoly.length < 3) return 1e6;
 		let minDist = Infinity;
 		let closestArcOnSpan = null;
 		for (const seg of segments) if (seg.kind === "arc" && seg.center && seg.radius !== void 0 && seg.startAngle !== void 0 && seg.endAngle !== void 0) {
@@ -92,17 +232,27 @@ export function curvedLoopSignedDist2D(pt, poly, segments) {
 				closestArcOnSpan = null;
 			}
 		}
-		let inside = pointInPolygon2D(pt, poly);
-		if (closestArcOnSpan && minDist < .8 && closestArcOnSpan.center && closestArcOnSpan.radius !== void 0 && closestArcOnSpan.startAngle !== void 0 && closestArcOnSpan.endAngle !== void 0) {
+		let inside = pointInPolygon2D(pt, evalPoly);
+		if (closestArcOnSpan && minDist < 1.2 && closestArcOnSpan.center && closestArcOnSpan.radius !== void 0 && closestArcOnSpan.startAngle !== void 0 && closestArcOnSpan.endAngle !== void 0) {
 			const span = normalizeAngle(closestArcOnSpan.endAngle - closestArcOnSpan.startAngle);
 			const midAng = closestArcOnSpan.startAngle + .5 * span;
-			const rProbe = Math.max(.1, closestArcOnSpan.radius - .8);
-			const centerSideInside = pointInPolygon2D({
-				u: closestArcOnSpan.center.u + rProbe * Math.cos(midAng),
-				v: closestArcOnSpan.center.v + rProbe * Math.sin(midAng)
-			}, poly);
+			const probeOffset = Math.min(2.0, Math.max(0.4, closestArcOnSpan.radius * 0.25));
+			const rProbeIn = Math.max(0.1, closestArcOnSpan.radius - probeOffset);
+			const rProbeOut = closestArcOnSpan.radius + probeOffset;
+			const inSideInside = pointInPolygon2D({
+				u: closestArcOnSpan.center.u + rProbeIn * Math.cos(midAng),
+				v: closestArcOnSpan.center.v + rProbeIn * Math.sin(midAng)
+			}, evalPoly);
+			const outSideInside = pointInPolygon2D({
+				u: closestArcOnSpan.center.u + rProbeOut * Math.cos(midAng),
+				v: closestArcOnSpan.center.v + rProbeOut * Math.sin(midAng)
+			}, evalPoly);
 			const rPt = Math.hypot(pt.u - closestArcOnSpan.center.u, pt.v - closestArcOnSpan.center.v);
-			inside = centerSideInside ? rPt < closestArcOnSpan.radius : rPt > closestArcOnSpan.radius;
+			if (inSideInside && !outSideInside) {
+				inside = rPt < closestArcOnSpan.radius;
+			} else if (!inSideInside && outSideInside) {
+				inside = rPt > closestArcOnSpan.radius;
+			}
 		}
 		return inside ? -minDist : minDist;
 	}
@@ -203,7 +353,7 @@ export function evalPrimitiveSDF(p, prim) {
 		const rAtT = (1 - t) * r0 + t * r1;
 		const cosAlpha = (wMax - wMin) / Math.hypot(wMax - wMin, r0 - r1);
 		const dLat = (Math.hypot(uVal - uCAtT, vVal - vCAtT) - rAtT) * cosAlpha;
-		const dW = Math.abs(wVal - wC) - hW;
+		const dW = Math.abs(wVal - wC) - (hW + (prim.operation === "subtract" ? 1.2 : 0));
 		res = Math.max(dLat, dW);
 	} else if (prim.shape === "pyramid" && prim.prismPolygon && prim.prismPolygon.length >= 3 && prim.apex3D) {
 		const axis = prim.prismAxis || "Z";
@@ -225,7 +375,7 @@ export function evalPrimitiveSDF(p, prim) {
 			u: uApex + (uVal - uApex) / scale,
 			v: vApex + (vVal - vApex) / scale
 		}, prim.prismPolygon, prim.prismSegments) * scale;
-		const dW = Math.abs(wVal - .5 * (wMin + wMax)) - .5 * (wMax - wMin);
+		const dW = Math.abs(wVal - .5 * (wMin + wMax)) - (.5 * (wMax - wMin) + (prim.operation === "subtract" ? 1.2 : 0));
 		res = Math.max(d2d, dW);
 	} else if (prim.shape === "plane_sheet" && prim.vertices3D && prim.vertices3D.length >= 3) {
 		const dx = Math.abs(p.x - xc) - hx;
@@ -1761,16 +1911,16 @@ export function generateAllCandidate3DEdges(targetView, baseExtrusions, bossSoli
 			};
 			const topScale = typeof prim.pyramidTopScale === "number" && prim.pyramidTopScale > 1e-3 ? prim.pyramidTopScale : 0;
 			const baseW = axis === "Z" ? Math.abs(az - zMin) > Math.abs(az - zMax) ? zMin : zMax : axis === "Y" ? Math.abs(ay - yMin) > Math.abs(ay - yMax) ? yMin : yMax : Math.abs(ax - xMin) > Math.abs(ax - xMax) ? xMin : xMax;
+			const topW = axis === "Z" ? (baseW === zMin ? zMax : zMin) : axis === "Y" ? (baseW === yMin ? yMax : yMin) : (baseW === xMin ? xMax : xMin);
+			const uApex = axis === "Z" ? ax : axis === "Y" ? ax : ay;
+			const vApex = axis === "Z" ? ay : axis === "Y" ? az : az;
 			const toBase3D = (u: number, v: number) => axis === "Z" ? { x: u, y: v, z: baseW } : axis === "Y" ? { x: u, y: baseW, z: v } : { x: baseW, y: u, z: v };
 			const toTop3D = (u: number, v: number) => {
 				if (topScale <= 1e-3) return apexPt;
-				const b = toBase3D(u, v);
 				const tFactor = 1 - topScale;
-				return {
-					x: b.x + tFactor * (ax - b.x),
-					y: b.y + tFactor * (ay - b.y),
-					z: b.z + tFactor * (az - b.z)
-				};
+				const uTop = u + tFactor * (uApex - u);
+				const vTop = v + tFactor * (vApex - v);
+				return axis === "Z" ? { x: uTop, y: vTop, z: topW } : axis === "Y" ? { x: uTop, y: topW, z: vTop } : { x: topW, y: uTop, z: vTop };
 			};
 			const hasArcSeg = Array.isArray(segs) && segs.some((s: any) => s.kind === "arc");
 			if (hasArcSeg && segs) {
@@ -1824,6 +1974,10 @@ export function generateAllCandidate3DEdges(targetView, baseExtrusions, bossSoli
 							}
 						}
 					} else if (s.p1 && s.p2) {
+						addGenUV({
+							u: 0.5 * (s.p1.u + s.p2.u),
+							v: 0.5 * (s.p1.v + s.p2.v)
+						});
 						lines3D.push({
 							p1: toBase3D(s.p1.u, s.p1.v),
 							p2: toBase3D(s.p2.u, s.p2.v),
@@ -1977,6 +2131,32 @@ export function generateAllCandidate3DEdges(targetView, baseExtrusions, bossSoli
 	};
 	const dispatchSolidEdges = (prim, ownerType, ownerId) => {
 		if (prim.id.startsWith("sub-frustum-notch-")) return;
+		if (prim.shape === "generalized_loft") {
+			const loft = primitiveToGeneralizedLoft(prim);
+			if (loft) {
+				const loftOut = extractGeneralizedLoftEdgesAndSilhouettes(loft, targetView);
+				for (const ls of loftOut.lines3D) {
+					lines3D.push({
+						p1: ls.p1,
+						p2: ls.p2,
+						ownerType,
+						ownerId,
+						featureId: prim.featureId,
+						featureLabel: prim.label
+					});
+				}
+				for (const lc of loftOut.circles3D) {
+					circles3D.push({
+						...lc,
+						ownerType,
+						ownerId,
+						featureId: prim.featureId,
+						featureLabel: prim.label
+					});
+				}
+			}
+			return;
+		}
 		if (prim.shape.startsWith("cylinder_")) pushCylinderEdges(prim, ownerType, ownerId);
 		else if (prim.shape === "sphere" || prim.shape === "hemisphere" || prim.shape.startsWith("cone_") || prim.shape === "pyramid" || prim.shape === "plane_sheet") pushParametricSolidEdges(prim, ownerType, ownerId);
 		else if (prim.shape === "prism") pushPrismEdges(prim, ownerType, ownerId);
@@ -2119,19 +2299,19 @@ export function generateAllCandidate3DEdges(targetView, baseExtrusions, bossSoli
 		}))
 	];
 	const allPlanarSolids = [
-		...baseExtrusions.filter((b) => b.shape === "box").map((b) => ({
+		...baseExtrusions.filter((b) => b.shape === "box" || b.shape === "prism").map((b) => ({
 			prim: b,
-			ownerType: "add",
+			ownerType: "add" as const,
 			ownerId: "base_solid"
 		})),
-		...bossSolids.filter((b) => b.shape === "box").map((b) => ({
+		...bossSolids.filter((b) => b.shape === "box" || b.shape === "prism").map((b) => ({
 			prim: b,
-			ownerType: "add",
+			ownerType: "add" as const,
 			ownerId: b.id
 		})),
-		...subSolids.filter((b) => b.shape === "box").map((b) => ({
+		...subSolids.filter((b) => b.shape === "box" || b.shape === "prism").map((b) => ({
 			prim: b,
-			ownerType: "subtract",
+			ownerType: "subtract" as const,
 			ownerId: b.id
 		}))
 	];
@@ -2871,6 +3051,153 @@ export function generateAllCandidate3DEdges(targetView, baseExtrusions, bossSoli
 			});
 		}
 	}
+	// Plane-ArcBarrel SSI: intersect planar box walls (e.g. vertical square hole X=55, 65) with prism arc barrels (e.g. top arch R=20)
+	for (const b of allBarrels) {
+		if (!b.isArc || b.startAngle === void 0 || b.endAngle === void 0) continue;
+		const R = b.radius;
+		for (const plItem of allPlanarSolids) {
+			const pl = plItem.prim;
+			if (pl.id === b.primId) continue;
+			const ownerType = plItem.ownerType === "subtract" || b.ownerType === "subtract" ? "subtract" : "add";
+			const ownerId = plItem.ownerType === "subtract" ? plItem.ownerId : b.ownerType === "subtract" ? b.ownerId : plItem.ownerId;
+			const secondOwnerId = plItem.ownerType === "subtract" && b.ownerType === "subtract" ? b.ownerId : plItem.ownerType === "add" && b.ownerType === "add" ? b.ownerId : void 0;
+			const featureId = plItem.ownerType === "subtract" ? pl.featureId : b.featureId || pl.featureId;
+			const featureLabel = plItem.ownerType === "subtract" ? pl.label : b.featureLabel || pl.label;
+			if (b.axis === "Y") {
+				const y1 = Math.max(b.wMin, pl.yMin);
+				const y2 = Math.min(b.wMax, pl.yMax);
+				if (y2 <= y1) continue;
+				for (const xVal of [pl.xMin, pl.xMax]) {
+					const dx = xVal - b.centerU;
+					if (Math.abs(dx) < R - 0.001) {
+						const dz = Math.sqrt(R * R - dx * dx);
+						for (const zInt of [b.centerV - dz, b.centerV + dz]) {
+							if (zInt >= pl.zMin - 0.1 && zInt <= pl.zMax + 0.1 && isAngleOnArc(Math.atan2(zInt - b.centerV, xVal - b.centerU), b.startAngle, b.endAngle, -0.02)) {
+								lines3D.push({
+									p1: { x: xVal, y: y1, z: zInt },
+									p2: { x: xVal, y: y2, z: zInt },
+									isSilhouette: false,
+									ownerType,
+									ownerId,
+									secondOwnerId,
+									featureId,
+									featureLabel
+								});
+							}
+						}
+					}
+				}
+				for (const zVal of [pl.zMin, pl.zMax]) {
+					const dz = zVal - b.centerV;
+					if (Math.abs(dz) < R - 0.001) {
+						const dx = Math.sqrt(R * R - dz * dz);
+						for (const xInt of [b.centerU - dx, b.centerU + dx]) {
+							if (xInt >= pl.xMin - 0.1 && xInt <= pl.xMax + 0.1 && isAngleOnArc(Math.atan2(zVal - b.centerV, xInt - b.centerU), b.startAngle, b.endAngle, -0.02)) {
+								lines3D.push({
+									p1: { x: xInt, y: y1, z: zVal },
+									p2: { x: xInt, y: y2, z: zVal },
+									isSilhouette: false,
+									ownerType,
+									ownerId,
+									secondOwnerId,
+									featureId,
+									featureLabel
+								});
+							}
+						}
+					}
+				}
+			} else if (b.axis === "Z") {
+				const z1 = Math.max(b.wMin, pl.zMin);
+				const z2 = Math.min(b.wMax, pl.zMax);
+				if (z2 <= z1) continue;
+				for (const xVal of [pl.xMin, pl.xMax]) {
+					const dx = xVal - b.centerU;
+					if (Math.abs(dx) < R - 0.001) {
+						const dy = Math.sqrt(R * R - dx * dx);
+						for (const yInt of [b.centerV - dy, b.centerV + dy]) {
+							if (yInt >= pl.yMin - 0.1 && yInt <= pl.yMax + 0.1 && isAngleOnArc(Math.atan2(yInt - b.centerV, xVal - b.centerU), b.startAngle, b.endAngle, -0.02)) {
+								lines3D.push({
+									p1: { x: xVal, y: yInt, z: z1 },
+									p2: { x: xVal, y: yInt, z: z2 },
+									isSilhouette: false,
+									ownerType,
+									ownerId,
+									secondOwnerId,
+									featureId,
+									featureLabel
+								});
+							}
+						}
+					}
+				}
+				for (const yVal of [pl.yMin, pl.yMax]) {
+					const dy = yVal - b.centerV;
+					if (Math.abs(dy) < R - 0.001) {
+						const dx = Math.sqrt(R * R - dy * dy);
+						for (const xInt of [b.centerU - dx, b.centerU + dx]) {
+							if (xInt >= pl.xMin - 0.1 && xInt <= pl.xMax + 0.1 && isAngleOnArc(Math.atan2(yVal - b.centerV, xInt - b.centerU), b.startAngle, b.endAngle, -0.02)) {
+								lines3D.push({
+									p1: { x: xInt, y: yVal, z: z1 },
+									p2: { x: xInt, y: yVal, z: z2 },
+									isSilhouette: false,
+									ownerType,
+									ownerId,
+									secondOwnerId,
+									featureId,
+									featureLabel
+								});
+							}
+						}
+					}
+				}
+			} else if (b.axis === "X") {
+				const x1 = Math.max(b.wMin, pl.xMin);
+				const x2 = Math.min(b.wMax, pl.xMax);
+				if (x2 <= x1) continue;
+				for (const yVal of [pl.yMin, pl.yMax]) {
+					const dy = yVal - b.centerU;
+					if (Math.abs(dy) < R - 0.001) {
+						const dz = Math.sqrt(R * R - dy * dy);
+						for (const zInt of [b.centerV - dz, b.centerV + dz]) {
+							if (zInt >= pl.zMin - 0.1 && zInt <= pl.zMax + 0.1 && isAngleOnArc(Math.atan2(zInt - b.centerV, yVal - b.centerU), b.startAngle, b.endAngle, -0.02)) {
+								lines3D.push({
+									p1: { x: x1, y: yVal, z: zInt },
+									p2: { x: x2, y: yVal, z: zInt },
+									isSilhouette: false,
+									ownerType,
+									ownerId,
+									secondOwnerId,
+									featureId,
+									featureLabel
+								});
+							}
+						}
+					}
+				}
+				for (const zVal of [pl.zMin, pl.zMax]) {
+					const dz = zVal - b.centerV;
+					if (Math.abs(dz) < R - 0.001) {
+						const dy = Math.sqrt(R * R - dz * dz);
+						for (const yInt of [b.centerU - dy, b.centerU + dy]) {
+							if (yInt >= pl.yMin - 0.1 && yInt <= pl.yMax + 0.1 && isAngleOnArc(Math.atan2(zVal - b.centerV, yInt - b.centerU), b.startAngle, b.endAngle, -0.02)) {
+								lines3D.push({
+									p1: { x: x1, y: yInt, z: zVal },
+									p2: { x: x2, y: yInt, z: zVal },
+									isSilhouette: false,
+									ownerType,
+									ownerId,
+									secondOwnerId,
+									featureId,
+									featureLabel
+								});
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 	const getBarrelCenterAlong = (b, coord) => {
 		if (b.axis === "Z") return coord === "X" ? b.centerU : b.centerV;
 		if (b.axis === "Y") return coord === "X" ? b.centerU : b.centerV;
@@ -3132,6 +3459,42 @@ export function generateAllCandidate3DEdges(targetView, baseExtrusions, bossSoli
 			}
 		}
 	}
+	// Layer 4 Analytical Slanted Plane-Quadric Section Curves (Truncated Cylinders, Cones, Frustums, Spheres)
+	const allCurvedItems = [...allCylinders, ...allCones, ...allSpheres];
+	const allPrismAndPyramidItems = [
+		...baseExtrusions.filter((b) => b.shape === "prism" || b.shape === "pyramid" || b.shape === "wedge_y").map((b) => ({
+			prim: b,
+			ownerType: "add" as const,
+			ownerId: "base_solid"
+		})),
+		...subSolids.filter((b) => b.shape === "prism" || b.shape === "pyramid" || b.shape === "wedge_y").map((b) => ({
+			prim: b,
+			ownerType: "subtract" as const,
+			ownerId: b.id
+		}))
+	];
+	for (const plItem of allPrismAndPyramidItems) {
+		const slantedPlanes = extractSlantedPlanesFromPrimitive(plItem.prim as any);
+		if (slantedPlanes.length === 0) continue;
+		for (const curItem of allCurvedItems) {
+			if (curItem.prim.id === plItem.prim.id) continue;
+			const ownerType = plItem.ownerType === "subtract" || curItem.ownerType === "subtract" ? "subtract" : "add";
+			const ownerId = plItem.ownerType === "subtract" ? plItem.ownerId : curItem.ownerType === "subtract" ? curItem.ownerId : "base_solid";
+			for (const sp of slantedPlanes) {
+				const segs = computePlaneQuadricSectionSegments(sp, curItem.prim as any, [...baseExtrusions, ...bossSolids, ...subSolids] as any, 36);
+				for (const seg of segs) {
+					lines3D.push({
+						p1: seg.p1,
+						p2: seg.p2,
+						ownerType,
+						ownerId,
+						featureId: plItem.prim.featureId || curItem.prim.featureId,
+						featureLabel: plItem.prim.label || curItem.prim.label
+					});
+				}
+			}
+		}
+	}
 	return {
 		lines3D,
 		circles3D,
@@ -3312,22 +3675,53 @@ export function projectCSGSolidToView(targetView, primitives3D, bounds) {
 		}
 		return isPointOccludedInView(pt, targetView, bounds, baseExtrusions, bossSolids, subSolids) ? "thin_dashed" : "thick_solid";
 	};
+	const allCSGPrimsForSplitting = [...baseExtrusions, ...bossSolids, ...subSolids];
 	for (const edge of lines3D) {
 		if (dist2D(projectPoint3DToView(edge.p1, targetView), projectPoint3DToView(edge.p2, targetView)) < .35) continue;
 		const len3D = Math.hypot(edge.p2.x - edge.p1.x, edge.p2.y - edge.p1.y, edge.p2.z - edge.p1.z);
 		const numSamples = Math.max(2, Math.ceil(len3D / COARSE_STEP));
+		const tRaw: number[] = [];
+		for (let i = 0; i <= numSamples; i++) tRaw.push(i / numSamples);
+		const dx = edge.p2.x - edge.p1.x;
+		const dy = edge.p2.y - edge.p1.y;
+		const dz = edge.p2.z - edge.p1.z;
+		const addT = (tVal: number) => {
+			if (tVal > 0.002 && tVal < 0.998) {
+				tRaw.push(Math.max(0.001, tVal - 0.0025));
+				tRaw.push(Math.min(0.999, tVal + 0.0025));
+			}
+		};
+		for (const prim of allCSGPrimsForSplitting) {
+			if (Math.abs(dx) > 1e-4) {
+				addT((prim.xMin - edge.p1.x) / dx);
+				addT((prim.xMax - edge.p1.x) / dx);
+			}
+			if (Math.abs(dy) > 1e-4) {
+				addT((prim.yMin - edge.p1.y) / dy);
+				addT((prim.yMax - edge.p1.y) / dy);
+			}
+			if (Math.abs(dz) > 1e-4) {
+				addT((prim.zMin - edge.p1.z) / dz);
+				addT((prim.zMax - edge.p1.z) / dz);
+			}
+		}
+		tRaw.sort((a, b) => a - b);
+		const tSamples: number[] = [];
+		for (const tVal of tRaw) {
+			if (tSamples.length === 0 || tVal - tSamples[tSamples.length - 1] > 0.0008) tSamples.push(tVal);
+		}
 		let runType = "air";
 		let runStartPt = evalEdgeExactPt(edge, 0);
-		for (let i = 0; i <= numSamples; i++) {
-			const t = i / numSamples;
+		for (let i = 0; i < tSamples.length; i++) {
+			const t = tSamples[i];
 			const state = evalEdgeState(edge, t);
 			if (i === 0) {
 				runType = state;
 				runStartPt = evalEdgeExactPt(edge, 0);
 			} else if (state !== runType) {
-				let lo = (i - 1) / numSamples;
+				let lo = tSamples[i - 1];
 				let hi = t;
-				for (let iter = 0; iter < 5; iter++) {
+				for (let iter = 0; iter < 6; iter++) {
 					const mid = .5 * (lo + hi);
 					if (evalEdgeState(edge, mid) === runType) lo = mid;
 					else hi = mid;

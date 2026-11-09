@@ -40,6 +40,8 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { ADDITION, Brush, Evaluator, INTERSECTION, SUBTRACTION } from "three-bvh-csg";
 import { Maximize2, Minimize2 } from "lucide-react";
+import { chainSegmentsIntoDensePolygon, sampleArcPoints } from "../utils/csgPrimitives";
+import { buildGeneralizedLoftManifoldPositions, primitiveToGeneralizedLoft } from "../kernel";
 
 // src/components/Viewport3D.tsx
 function ensureOutwardNormals(geom: BufferGeometry): BufferGeometry {
@@ -73,53 +75,14 @@ function ensureOutwardNormals(geom: BufferGeometry): BufferGeometry {
 
 function buildOrdered2DRing(rawPts: any[], segs?: any[]): { u: number; v: number }[] {
 	const dist2 = (a: { u: number; v: number }, b: { u: number; v: number }) => Math.hypot(a.u - b.u, a.v - b.v);
-	const ring: { u: number; v: number }[] = [];
 	if (Array.isArray(segs) && segs.length > 0) {
-		const N_ARC = 40;
-		let currPt: { u: number; v: number } | null = null;
-		for (let sIdx = 0; sIdx < segs.length; sIdx++) {
-			const s = segs[sIdx];
-			if (s.kind === "arc" && s.center && Number.isFinite(s.radius) && s.startAngle !== void 0 && s.endAngle !== void 0) {
-				let span = (s.endAngle - s.startAngle) % (Math.PI * 2);
-				if (span < 0) span += Math.PI * 2;
-				if (span < 1e-4) span = Math.PI * 2;
-				const sampled: { u: number; v: number }[] = [];
-				for (let k = 0; k <= N_ARC; k++) {
-					const ang = s.startAngle + (k / N_ARC) * span;
-					sampled.push({
-						u: s.center.u + s.radius * Math.cos(ang),
-						v: s.center.v + s.radius * Math.sin(ang)
-					});
-				}
-				const arcStart = sampled[0];
-				const arcEnd = sampled[sampled.length - 1];
-				const refPt = currPt || s.p1 || arcStart;
-				if (dist2(arcEnd, refPt) + 1e-3 < dist2(arcStart, refPt)) {
-					sampled.reverse();
-				}
-				for (const pt of sampled) {
-					if (ring.length === 0 || dist2(ring[ring.length - 1], pt) > 0.05) {
-						ring.push(pt);
-					}
-				}
-				currPt = ring[ring.length - 1] || null;
-			} else if (s.p1 && s.p2) {
-				let pStart = s.p1;
-				let pEnd = s.p2;
-				if (currPt && dist2(pEnd, currPt) + 1e-3 < dist2(pStart, currPt)) {
-					pStart = s.p2;
-					pEnd = s.p1;
-				}
-				if (ring.length === 0 || dist2(ring[ring.length - 1], pStart) > 0.05) {
-					ring.push({ u: pStart.u, v: pStart.v });
-				}
-				if (dist2(ring[ring.length - 1], pEnd) > 0.05) {
-					ring.push({ u: pEnd.u, v: pEnd.v });
-				}
-				currPt = ring[ring.length - 1] || null;
-			}
+		const chained = chainSegmentsIntoDensePolygon(segs, rawPts, 48);
+		if (chained.length >= 3) {
+			return chained;
 		}
-	} else if (Array.isArray(rawPts)) {
+	}
+	const ring: { u: number; v: number }[] = [];
+	if (Array.isArray(rawPts)) {
 		for (const pt of rawPts) {
 			if (pt && Number.isFinite(pt.u) && Number.isFinite(pt.v)) {
 				if (ring.length === 0 || dist2(ring[ring.length - 1], pt) > 0.05) {
@@ -266,10 +229,14 @@ function createPrimitiveGeometry(prim) {
 		const vC0 = prim.vCenterMin ?? defV;
 		const vC1 = prim.vCenterMax ?? defV;
 		const isEccentric = Math.abs(uC0 - uC1) > 0.05 || Math.abs(vC0 - vC1) > 0.05;
-		if (isEccentric) {
+		const isSub = prim.operation === "subtract";
+		if (isEccentric || isSub) {
 			const N = 48;
-			const w0 = isZ ? prim.zMin : isY ? prim.yMin : prim.xMin;
-			const w1 = isZ ? prim.zMax : isY ? prim.yMax : prim.xMax;
+			const rawW0 = isZ ? prim.zMin : isY ? prim.yMin : prim.xMin;
+			const rawW1 = isZ ? prim.zMax : isY ? prim.yMax : prim.xMax;
+			const padW = isSub ? 1.0 : 0;
+			const w0 = rawW0 - padW;
+			const w1 = rawW1 + padW;
 			const toThree = (u: number, v: number, w: number): [number, number, number] => {
 				if (isZ) return [u - 60, w - 50, v - 60];
 				if (isY) return [u - 60, v - 50, w - 60];
@@ -330,7 +297,14 @@ function createPrimitiveGeometry(prim) {
 		const axis = (prim.prismAxis || prim.extrudeAxis || "Z").toString().toUpperCase();
 		const [ax, ay, az] = prim.apex3D;
 		const apexV = new Vector3(ax - 60, az - 50, ay - 60);
-		const baseW = axis === "Z" ? Math.abs(az - prim.zMin) > Math.abs(az - prim.zMax) ? prim.zMin : prim.zMax : axis === "Y" ? Math.abs(ay - prim.yMin) > Math.abs(ay - prim.yMax) ? prim.yMin : prim.yMax : Math.abs(ax - prim.xMin) > Math.abs(ax - prim.xMax) ? prim.xMin : prim.xMax;
+		const rawBaseW = axis === "Z" ? Math.abs(az - prim.zMin) > Math.abs(az - prim.zMax) ? prim.zMin : prim.zMax : axis === "Y" ? Math.abs(ay - prim.yMin) > Math.abs(ay - prim.yMax) ? prim.yMin : prim.yMax : Math.abs(ax - prim.xMin) > Math.abs(ax - prim.xMax) ? prim.xMin : prim.xMax;
+		const rawTopW = axis === "Z" ? (rawBaseW === prim.zMin ? prim.zMax : prim.zMin) : axis === "Y" ? (rawBaseW === prim.yMin ? prim.yMax : prim.yMin) : (rawBaseW === prim.xMin ? prim.xMax : prim.xMin);
+		const padDir = rawTopW >= rawBaseW ? 1 : -1;
+		const padW = prim.operation === "subtract" ? 1.0 : 0;
+		const baseW = rawBaseW - padDir * padW;
+		const topW = rawTopW + padDir * padW;
+		const uApex = axis === "Z" ? ax : axis === "Y" ? ax : ay;
+		const vApex = axis === "Z" ? ay : axis === "Y" ? az : az;
 		const baseVerts = pts.map((p) => {
 			if (axis === "Z") return new Vector3(p.u - 60, baseW - 50, p.v - 60);
 			if (axis === "Y") return new Vector3(p.u - 60, p.v - 50, baseW - 60);
@@ -346,7 +320,14 @@ function createPrimitiveGeometry(prim) {
 		};
 		const topScale = typeof prim.pyramidTopScale === "number" && prim.pyramidTopScale > 1e-3 ? prim.pyramidTopScale : 0;
 		if (topScale > 1e-3) {
-			const topVerts = baseVerts.map((bv) => bv.clone().lerp(apexV, 1 - topScale));
+			const tFactor = 1 - topScale;
+			const topVerts = pts.map((p) => {
+				const uTop = p.u + tFactor * (uApex - p.u);
+				const vTop = p.v + tFactor * (vApex - p.v);
+				if (axis === "Z") return new Vector3(uTop - 60, topW - 50, vTop - 60);
+				if (axis === "Y") return new Vector3(uTop - 60, vTop - 50, topW - 60);
+				return new Vector3(topW - 60, vTop - 50, uTop - 60);
+			});
 			const topCentroid = topVerts.reduce((acc, v) => acc.add(v), new Vector3()).divideScalar(topVerts.length);
 			const interiorRef = centroid.clone().lerp(topCentroid, 0.5);
 			for (let i = 0; i < baseVerts.length; i++) {
@@ -403,6 +384,17 @@ function createPrimitiveGeometry(prim) {
 		extrude.rotateY(-Math.PI / 2);
 		extrude.translate(cx, cy, cz);
 		return extrude;
+	}
+	if (prim.shape === "generalized_loft") {
+		const loft = primitiveToGeneralizedLoft(prim);
+		if (loft) {
+			const positions = buildGeneralizedLoftManifoldPositions(loft);
+			if (positions.length >= 9) {
+				const geom = new BufferGeometry();
+				geom.setAttribute("position", new Float32BufferAttribute(positions, 3));
+				return ensureOutwardNormals(geom);
+			}
+		}
 	}
 	const box = new BoxGeometry(dx, dz, dy);
 	box.translate(cx, cy, cz);

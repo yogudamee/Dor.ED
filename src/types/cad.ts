@@ -142,7 +142,8 @@ export interface Primitive3D {
     | 'wedge_y'
     | 'rib_xz'
     | 'prism'
-    | 'plane_sheet';
+    | 'plane_sheet'
+    | 'generalized_loft';
   // Bounding box or center parameters in engineering space X:[0,120], Y:[0,120], Z:[0,120]
   xMin: number;
   xMax: number;
@@ -156,12 +157,20 @@ export interface Primitive3D {
   centerX?: number;
   centerY?: number;
   centerZ?: number;
+  uCenterMin?: number;
+  vCenterMin?: number;
+  uCenterMax?: number;
+  vCenterMax?: number;
   apex3D?: [number, number, number];
+  pyramidTopScale?: number;
   vertices3D?: [number, number, number][];
   prismAxis?: 'X' | 'Y' | 'Z';
+  extrudeAxis?: 'x' | 'y' | 'z';
   prismPolygon?: Point2D[];
+  polygon2D?: Point2D[];
   prismSegments?: LoopCurveSegment2D[];
   isInternalFeature?: boolean; // True for holes, slots, blind holes (used in X-Ray mode)
+  isInsideLoopContour?: boolean;
 }
 
 export interface ProjectionStep {
@@ -195,6 +204,8 @@ export interface DiagnosticFixPayload {
   type:
     | 'align_axis'
     | 'add_missing_hidden_hole'
+    | 'add_circle_centerlines'
+    | 'add_revolution_axis'
     | 'close_dangling'
     | 'convert_linetype'
     | 'replace_view_entities';
@@ -207,6 +218,12 @@ export interface DiagnosticFixPayload {
   holeRadius?: number;
   spanMin?: number;
   spanMax?: number;
+  center?: Point2D;
+  radius?: number;
+  needHoriz?: boolean;
+  needVert?: boolean;
+  orientation?: 'vertical' | 'horizontal';
+  axisCoord?: number;
   danglingEntityId?: string;
   danglingEndpoint?: 'p1' | 'p2';
   snapTargetPt?: Point2D;
@@ -224,6 +241,7 @@ export interface DiagnosticIssue {
     | 'violation_width'  // 俯左宽不相等
     | 'unclosed_loop'    // 拓扑未闭合/悬空线
     | 'hidden_conflict'  // 虚实线逻辑冲突
+    | 'missing_centerline' // 缺失中心线/回转轴线
     | 'under_constrained'; // 欠约束多解
   title: string;
   description: string;
