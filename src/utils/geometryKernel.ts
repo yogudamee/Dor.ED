@@ -12,12 +12,11 @@ import {
   ViewType,
 } from '../types/cad';
 import {
-  applySingleDiagnosticFix,
-  runGbtThreeViewDiagnostics,
-} from '../kernel/diagnostics/gbtDiagnostics';
-import { getNormalizedBenchmarkPresets } from '../kernel/benchmark/benchmarkCases';
-import { getThirdTargetView } from '../kernel/lifting3d/surfacePrimitives';
-import { reconstructAndDeriveThirdView } from '../kernel/pipeline';
+  deriveFromCustomViews as kernelDeriveFromCustomViews,
+  diagnoseThreeViews as kernelDiagnoseThreeViews,
+  fixSingleDiagnosticIssue as kernelFixSingleDiagnosticIssue,
+  getNormalizedBenchmarkPresets,
+} from '../kernel';
 
 export { getNormalizedBenchmarkPresets };
 
@@ -1483,27 +1482,24 @@ export function deriveFromCustomViews(
   knownViews: [ViewType, ViewType] = ['front', 'top'],
   targetView?: ViewType
 ): ReconstructedSolution[] {
-  const [v1, v2] = knownViews;
-  const expectedTarget = targetView ?? getThirdTargetView(v1, v2);
-  void expectedTarget;
-  return reconstructAndDeriveThirdView(entities, v1, v2, { maxSolutions: 4 });
+  return kernelDeriveFromCustomViews(entities, knownViews, targetView);
 }
 
 export const deriveThirdView = deriveFromCustomViews;
 
 export function diagnoseThreeViews(
   entities: CadEntity[],
-  _knownViews?: [ViewType, ViewType],
-  _lang = 'zh-CN'
+  knownViews?: [ViewType, ViewType],
+  lang: 'zh-CN' | 'zh-TW' | 'en' = 'zh-CN'
 ): DiagnosticIssue[] {
-  return runGbtThreeViewDiagnostics(entities);
+  return kernelDiagnoseThreeViews(entities, knownViews, lang);
 }
 
 export function fixSingleDiagnosticIssue(
   issue: DiagnosticIssue,
   entities: CadEntity[]
 ): CadEntity[] {
-  return applySingleDiagnosticFix(entities, issue);
+  return kernelFixSingleDiagnosticIssue(issue, entities);
 }
 
 export const applyDiagnosticFix = fixSingleDiagnosticIssue;

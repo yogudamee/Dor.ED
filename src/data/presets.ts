@@ -1,5 +1,5 @@
 import { PresetCase } from '../types/cad';
-import { getNormalizedBenchmarkPresets } from '../kernel/benchmark/benchmarkCases';
+import { getNormalizedBenchmarkPresets } from '../kernel';
 
 export const PRESET_CASES: PresetCase[] = [
   {
