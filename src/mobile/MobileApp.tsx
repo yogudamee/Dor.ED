@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -25,6 +25,7 @@ import {
   Scissors,
   Settings,
   ShieldAlert,
+  ShieldCheck,
   SlidersHorizontal,
   Smartphone,
   Square,
@@ -45,7 +46,10 @@ import {
   ViewType,
 } from '../types/cad';
 import { MobileCadCanvas2D } from './MobileCadCanvas2D';
-import { Viewport3D } from '../components/Viewport3D';
+
+const Viewport3D = lazy(() =>
+  import('../components/Viewport3D').then((m) => ({ default: m.Viewport3D }))
+);
 
 export interface MobileAppProps {
   dict: any;
@@ -91,6 +95,7 @@ export interface MobileAppProps {
   materialPreset: string;
   onOpenDownloadModal: () => void;
   onOpenSettingsModal: () => void;
+  onOpenBenchmarkModal: () => void;
   onSwitchToDesktop: () => void;
 }
 
@@ -147,10 +152,12 @@ export const MobileApp: React.FC<MobileAppProps> = ({
   materialPreset,
   onOpenDownloadModal,
   onOpenSettingsModal,
+  onOpenBenchmarkModal,
   onSwitchToDesktop,
 }) => {
   // Active main viewport tab: 'front' | 'top' | 'left' | '3d'
   const [activeTab, setActiveTab] = useState<'front' | 'top' | 'left' | '3d'>('front');
+  const [libraryFilter, setLibraryFilter] = useState<'all' | 'classic' | 'benchmark'>('all');
   // Upper Cross-View Alignment Reference Strip (Expanded by default per user choice)
   const [refStripExpanded, setRefStripExpanded] = useState<boolean>(true);
   // Popover & Sheet states
@@ -322,6 +329,16 @@ export const MobileApp: React.FC<MobileAppProps> = ({
                     <button
                       onClick={() => {
                         setMoreMenuOpen(false);
+                        onOpenBenchmarkModal();
+                      }}
+                      className="w-full px-3.5 py-2.5 text-left text-[#38BDF8] hover:bg-[#1E293B] flex items-center gap-2.5 font-medium"
+                    >
+                      <ShieldCheck className="w-4 h-4 text-[#38BDF8]" />
+                      <span>12 题内核基准自检</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setMoreMenuOpen(false);
                         onOpenDownloadModal();
                       }}
                       className="w-full px-3.5 py-2.5 text-left text-[#E2E8F0] hover:bg-[#1E293B] flex items-center gap-2.5"
@@ -387,39 +404,87 @@ export const MobileApp: React.FC<MobileAppProps> = ({
       {/* LIBRARY LIST MODE */}
       {isShowingLibraryList ? (
         <div className="flex-1 overflow-y-auto p-3.5 space-y-3 bg-[#0B0F17]">
-          <div className="space-y-1">
-            <h1 className="text-base font-bold text-white">
-              {dict.libraryView.title}
-            </h1>
-            <p className="text-xs text-[#94A3B8]">{dict.libraryView.subtitle}</p>
+          <div className="flex items-start justify-between gap-2">
+            <div className="space-y-1">
+              <h1 className="text-base font-bold text-white">
+                {dict.libraryView.title}
+              </h1>
+              <p className="text-xs text-[#94A3B8]">{dict.libraryView.subtitle}</p>
+            </div>
+            <button
+              type="button"
+              onClick={onOpenBenchmarkModal}
+              className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[#059669] text-xs font-semibold text-white flex items-center gap-1 shrink-0"
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>基准自检</span>
+            </button>
+          </div>
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+            {(
+              [
+                { id: 'all', label: `全部 (${localizedPresets.length})` },
+                {
+                  id: 'classic',
+                  label: `经典题 (${localizedPresets.filter((p) => p.category !== 'benchmark').length})`,
+                },
+                {
+                  id: 'benchmark',
+                  label: `高阶基准 (${localizedPresets.filter((p) => p.category === 'benchmark').length})`,
+                },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setLibraryFilter(tab.id)}
+                className={`min-h-[32px] px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap ${
+                  libraryFilter === tab.id
+                    ? 'bg-[#0284C7] text-white'
+                    : 'bg-[#111827] text-[#94A3B8] border border-[#263244]'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
           </div>
           <div className="space-y-2.5">
-            {localizedPresets.map((preset, index) => (
-              <div
-                key={preset.id}
-                onClick={() => onEnterLibraryCase(preset)}
-                className="p-3.5 rounded-xl bg-[#111827] active:bg-[#161F2E] border border-[#263244] space-y-2 cursor-pointer"
-              >
-                <div className="flex items-center justify-between text-[11px] font-mono text-[#38BDF8]">
-                  <span>0{index + 1}</span>
-                  <span>{preset.badge}</span>
+            {localizedPresets
+              .filter((p) =>
+                libraryFilter === 'all'
+                  ? true
+                  : libraryFilter === 'benchmark'
+                  ? p.category === 'benchmark'
+                  : p.category !== 'benchmark'
+              )
+              .map((preset, index) => (
+                <div
+                  key={preset.id}
+                  onClick={() => onEnterLibraryCase(preset)}
+                  className="p-3.5 rounded-xl bg-[#111827] active:bg-[#161F2E] border border-[#263244] space-y-2 cursor-pointer"
+                >
+                  <div className="flex items-center justify-between text-[11px] font-mono text-[#38BDF8]">
+                    <span>{String(index + 1).padStart(2, '0')}</span>
+                    <span>{preset.badge}</span>
+                  </div>
+                  <div className="text-sm font-semibold text-white">
+                    {preset.name}
+                  </div>
+                  <p className="text-xs text-[#94A3B8] leading-relaxed">
+                    {preset.description}
+                  </p>
+                  <div className="pt-2 border-t border-[#1E293B] flex items-center justify-between">
+                    <span className="text-[11px] font-mono text-[#64748B]">
+                      {preset.solutions.length > 0
+                        ? `${preset.solutions.length} ${dict.libraryView.solutionsTitle}`
+                        : 'CSP 体元约束实时求解'}
+                    </span>
+                    <span className="px-3 py-1 rounded-lg bg-[#0284C7] text-xs font-medium text-white">
+                      {dict.libraryView.enterBtn}
+                    </span>
+                  </div>
                 </div>
-                <div className="text-sm font-semibold text-white">
-                  {preset.name}
-                </div>
-                <p className="text-xs text-[#94A3B8] leading-relaxed">
-                  {preset.description}
-                </p>
-                <div className="pt-2 border-t border-[#1E293B] flex items-center justify-between">
-                  <span className="text-[11px] font-mono text-[#64748B]">
-                    {preset.solutions.length} {dict.libraryView.solutionsTitle}
-                  </span>
-                  <span className="px-3 py-1 rounded-lg bg-[#0284C7] text-xs font-medium text-white">
-                    {dict.libraryView.enterBtn}
-                  </span>
-                </div>
-              </div>
-            ))}
+              ))}
           </div>
         </div>
       ) : (
@@ -489,16 +554,24 @@ export const MobileApp: React.FC<MobileAppProps> = ({
                   className="relative w-full h-full min-h-0 bg-[#090D14] cursor-pointer"
                   onClick={() => setActiveTab('3d')}
                 >
-                  <Viewport3D
-                    primitives={currentSolution?.primitives3D || []}
-                    hoveredFeatureId={null}
-                    isFullscreen={false}
-                    onToggleFullscreen={() => setActiveTab('3d')}
-                    xRayMode={xRayMode}
-                    onToggleXRay={() => setXRayMode((prev) => !prev)}
-                    materialPreset={materialPreset as any}
-                    labels={dict.view3D}
-                  />
+                  <Suspense
+                    fallback={
+                      <div className="w-full h-full bg-[#090D14] flex items-center justify-center text-[10px] text-[#64748B]">
+                        3D...
+                      </div>
+                    }
+                  >
+                    <Viewport3D
+                      primitives={currentSolution?.primitives3D || []}
+                      hoveredFeatureId={null}
+                      isFullscreen={false}
+                      onToggleFullscreen={() => setActiveTab('3d')}
+                      xRayMode={xRayMode}
+                      onToggleXRay={() => setXRayMode((prev) => !prev)}
+                      materialPreset={materialPreset as any}
+                      labels={dict.view3D}
+                    />
+                  </Suspense>
                   <div className="absolute top-1.5 left-1.5 pointer-events-none px-1.5 py-0.5 rounded bg-[#111827]/90 border border-[#263244] text-[10px] font-semibold text-[#38BDF8]">
                     3D 预览
                   </div>
@@ -536,16 +609,24 @@ export const MobileApp: React.FC<MobileAppProps> = ({
             {/* Active Canvas or Full 3D Viewport */}
             <div className="flex-1 relative min-h-0 w-full">
               {activeTab === '3d' ? (
-                <Viewport3D
-                  primitives={currentSolution?.primitives3D || []}
-                  hoveredFeatureId={null}
-                  isFullscreen={false}
-                  onToggleFullscreen={() => setActiveTab('front')}
-                  xRayMode={xRayMode}
-                  onToggleXRay={() => setXRayMode((prev) => !prev)}
-                  materialPreset={materialPreset as any}
-                  labels={dict.view3D}
-                />
+                <Suspense
+                  fallback={
+                    <div className="w-full h-full bg-[#0D131F] flex items-center justify-center text-xs text-[#64748B]">
+                      3D 视窗就绪中...
+                    </div>
+                  }
+                >
+                  <Viewport3D
+                    primitives={currentSolution?.primitives3D || []}
+                    hoveredFeatureId={null}
+                    isFullscreen={false}
+                    onToggleFullscreen={() => setActiveTab('front')}
+                    xRayMode={xRayMode}
+                    onToggleXRay={() => setXRayMode((prev) => !prev)}
+                    materialPreset={materialPreset as any}
+                    labels={dict.view3D}
+                  />
+                </Suspense>
               ) : (
                 <>
                   <MobileCadCanvas2D
@@ -599,7 +680,7 @@ export const MobileApp: React.FC<MobileAppProps> = ({
 
               {/* Bottom Floating Candidate Solution Switcher Strip */}
               {currentSolutions.length > 1 && (
-                <div className="absolute bottom-2.5 left-2.5 right-2.5 z-20 flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#0D131F]/95 backdrop-blur-md border border-[#38BDF8]/40 shadow-lg overflow-x-auto">
+                <div className="absolute bottom-2.5 left-2.5 right-2.5 z-20 flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#0D131F]/95 border border-[#38BDF8]/40 shadow-lg overflow-x-auto">
                   <span className="text-[11px] font-semibold text-[#38BDF8] shrink-0">
                     多解:
                   </span>

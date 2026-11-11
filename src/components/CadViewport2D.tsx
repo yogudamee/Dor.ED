@@ -603,8 +603,8 @@ export const CadViewport2D: any = ({
 				for (let i = 0; i < sides; i++) {
 					const ang = baseAngle + i * Math.PI * 2 / sides;
 					pts.push({
-						u: Number((drawStart.u + Math.cos(ang) * radius).toFixed(1)),
-						v: Number((drawStart.v + Math.sin(ang) * radius).toFixed(1))
+						u: Number((drawStart.u + Math.cos(ang) * radius).toFixed(2)),
+						v: Number((drawStart.v + Math.sin(ang) * radius).toFixed(2))
 					});
 				}
 				onChangeEntities([...entities, {

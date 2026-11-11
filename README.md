@@ -1,64 +1,44 @@
-# Dor.ED — 工程制图三视图智能推导与三维 CSG 重建系统
+# Dor.ED — 工业级 2D-to-3D 逆向工程与智能制图诊断 CAD 内核系统
 
-**Dor.ED** 是一款面向机械工程制图、画法几何教学与三维空间思维训练的专业级 CAD 系统。软件集成了 **2D 参数化正交三视图绘图工作台**、**纯离线解析式 SDF（有向距离场）三维布尔重建引擎**、**26 邻域表面真实性消隐投影器** 以及 **跨视图拓扑重投影自动诊断修复引擎**，支持从任意两个已知正交视图自动推导出第三个视图与真实三维实体，并支持一键打包为 **Windows 桌面端 (`.exe`)** 与 **Android 移动端 (`.apk`)**。
-
----
-
-## ✨ 核心功能亮点
-
-### 1. 解析式三维 CSG 布尔重建与第三视图自动推导
-- **多原语智能识别**：支持从二维三视图自动识别并重建以下三维基本体与复合体：
-  - **基础柱体/盒体**：长方体 (`box`)、正交三轴圆柱/通孔/盲孔 (`cylinder_x / y / z`)、任意非矩形多边形带圆弧拉伸体 (`prism`)
-  - **曲面与锥台原语**：球体 (`sphere`)、平底半球体 (`hemisphere`)、正交圆锥与圆台 (`cone_x / y / z`)、不规则多边形/菱形底面棱锥 (`pyramid`)
-  - **空间薄片与多层组合体**：非闭合空间平面薄片 (`plane_sheet`)、同轴多层堆叠组合体（如圆台/半球叠加于方形基座）、雙斜角多边形交集 (`intersect`)
-- **精确解析 SDF 与自适应球体追踪消隐 (HLR)**：
-  - 内置 26 邻域表面真实性判定 (`isPointOnRealCSGSurface`)，彻底消除斜面、锥面及棱锥底边在正交轴向上的探测死角。
-  - 自动计算平面切球体、平面切圆锥、圆柱穿球体/圆柱正交相贯线，并精确区分可见轮廓线（**粗实线**）、不可见内部孔槽轮廓（**细虚线**）与回转轴线（**细点画线**）。
-
-### 2. 跨视图拓扑诊断与一键修复 (`Diagnose & Auto-Fix`)
-- **双向重投影比对**：将重建出的 3D CSG 实体逆向投射回三个正交视图，与用户手绘视图进行像素级/区间级双向比对。
-- **三视图投影规律校验**：自动检测「长对正 ($\Delta X$)」、「高平齐 ($\Delta Z$)」、「宽相等 ($\Delta Y$)」对齐偏差、漏画相贯线/虚线、多余极值台階线及虚实线画反等错误，并提供**单条修复**与**全部一键修复**。
-
-### 3. 专业级 2D CAD 交互体验
-- **动态尺寸与捕捉浮窗 (Dynamic HUD)**：绘图时实时跟随光标显示长度与角度 (`L=... ∠...°`)、矩形宽高 (`W×H`)、圆直径/半径 (`Ø / R`) 及圆弧张角 (`Δ...°`)。
-- **全功能对象捕捉 (OSNAP)**：支持网格 (`Grid`)、端点 (`END`)、中点 (`MID`)、圆心 (`CEN`)、象限点 (`QUAD`)、真实几何交点 (`INT`) 及跨视图实时对齐射线 (`X / Y / Z`)。
-- **实时自动推导 (`Auto-Derive`)**：开启后，在任意两个视图落笔完成轮廓即可实时同步更新 3D 模型与第三视图。
-
-### 4. 手机 Android 专属触控操作模式 (`Mobile Touch Mode`)
-- **自适应/一键切换触控布局**：顶栏支持一键切换 `📱 触控模式` 与 `💻 桌面模式`（移动端屏幕自动启用）。
-- **单视图全屏切换栏**：针对手机屏幕优化，顶部提供 `[主视图 (X-Z)]`、`[俯视图 (X-Y)]`、`[左视图 (Y-Z)]`、`[3D 实体]`、`[四视图同屏]` 快速切换标签，以及触控专属 `[↶ 撤销]` / `[↷ 重做]` 按钮。
-- **双指捏合缩放与平移**：2D 画布原生支持双指捏合无级缩放 (`Pinch-to-Zoom`) 与双指拖拽平移，单指精准绘图与拾取。
-- **悬浮触控编辑栏**：绘图或选中图元时，画布底部自动弹出 `[✓ 结束线段]`、`[复制]`、`[粘贴]`、`[1:实 / 2:虚 / 3:点]`、`[删除]` 悬浮按钮，无需物理键盘或鼠标右键即可完成全部专业 CAD 操作。
+**Dor.ED** 是一款严格遵循 **GB/T 4458.1 第一角画法** 与 **GB/T 4458.4 机械制图图线标准** 的计算几何逆向工程与画法几何智能诊断 CAD 系统。系统内置纯离线 **6 层计算几何与三维曲边体元约束满足求解引擎（6-Layer Computational Geometry & 3D Cellular CSP Kernel）**，能够从任意两个正交视图自动反演具有零重投影残差的三维水密流形实体（支持物理真多解按奥卡姆剃刀复杂度排序输出前 4 组构型），并推导定量消隐后的第三视图；同时保持桌面四视图工作站与手机竖屏触控专版的物理级前端隔离。
 
 ---
 
-## ⌨️ 键盘快捷键一览
+## ✨ 六层计算几何与体元求解内核架构 (`src/kernel/`)
 
-| 快捷键 | 功能说明 | 备注 |
-| :--- | :--- | :--- |
-| **`1`** | 切换为 **粗实线** (`thick_solid`) | 若当前已选中图元，直接将选中图元批量改为粗实线 |
-| **`2`** | 切换为 **细虚线** (`thin_dashed`) | 若当前已选中图元，直接将选中图元批量改为细虚线 |
-| **`3`** | 切换为 **细点画线** (`center_dot_dash`) | 若当前已选中图元，直接将选中图元批量改为细点画线 |
-| **`4`** | 切换为 **辅助线** (`construction`) | 若当前已选中图元，直接将选中图元批量改为辅助线 |
-| **`Ctrl + C`** | **复制**当前视图选中的图元 | 支持同视图阵列粘贴或跨视图粘贴 |
-| **`Ctrl + V`** | **粘贴**剪贴板中的图元 | 自动按网格间距偏移并保持选中状态，方便直接拖拽定位 |
-| **`Ctrl + A`** | **全选**当前激活视图的所有图元 | 自动切换至选择模式 |
-| **`Ctrl + Z` / `Ctrl + Y`** | **撤销** / **重做** | 支持最多 100 步历史记录 |
-| **`Delete` / `Backspace`** | **删除**当前选中的图元 | — |
-| **`Enter` / `Space`** | **结束**当前连续折线段绘制 | 等效于在直线模式下单击鼠标右键 |
-| **`F`** 或 **双击中键** | **重置视图缩放与平移 (100%)** | 恢复默认视角与居中偏移 |
-| **`F8`** | 开启 / 关闭 **正交锁定 (Ortho)** | 按住 **`Shift`** 键支持 **45° 倍数极轴锁定** |
-| **`V`** | 选择工具 (`Select`) | 支持夹点 (`Grip`) 拉伸、整体平移、蓝框窗口选与绿框交叉选 |
-| **`L`** | 直线工具 (`Line`) | 支持连续折线绘制 |
-| **`R`** | 矩形工具 (`Rect`) | 对角两点绘矩形 |
-| **`P`** | 正多边形工具 (`Polygon`) | 可在设置中调整边数 (3~12) |
-| **`C`** | 圆工具 (`Circle`) | 圆心与半径绘圆 |
-| **`A`** | 圆弧工具 (`Arc`) | 圆心、起点角度、终点角度逆时针绘弧 |
-| **`G`** | 几何切线工具 (`Tangent`) | 自动计算并吸附圆周精确几何切点 |
-| **`T`** | 修剪工具 (`Trim`) | 在交点处剪除多余线段或将圆裁剪为圆弧 |
-| **`E`** | 延伸工具 (`Extend`) | 将线段或圆弧延伸至前方最近边界交点 |
-| **`O`** | 偏移工具 (`Offset`) | 生成平行线或同心圆/圆弧 |
-| **`D`** | 擦除工具 (`Erase`) | 点击直接删除单个图元 |
+1. **Layer 1 — 2D 平面布置图与载体还原层 (`arrangement2d`)**
+   - **精确求交与微缝桥接 (`snapAndSplit.ts`)**：支持 Line-Line、Line-Circle/Arc、Circle-Circle 精确解析求交、T 型节点/切点打断、$\le 1.2^\circ$ 正交微偏校准、$\le 2.5\text{mm}$ 端点微缝桥接以及实虚重叠优先级去重（`thick_solid > thin_dashed > center_dot_dash`）。
+   - **DCEL 最小原子面与并集环提取 (`dcelBuilder.ts`)**：基于出射切向角与有向曲率（$\pm 1/R$）构建平面双向连接边表（DCEL），自动剪除悬空毛刺边，提取全部最小闭合子环与多面并集轮廓，杜绝丢失多级叠放阶梯。
+   - **解析载体自动缝合 (`carrierReconstruction.ts`)**：自动将被圆孔或内框打断的共线实/虚线段缝合还原为贯穿母线，将同心实弧+虚弧或修剪优弧还原为完整解析圆，并统一识别平行细虚线带与八字形斜细虚线对。
+
+2. **Layer 2 — 3D 解析半空间与广义直纹放样升维层 (`lifting3d`)**
+   - **广义直纹放样算子 (`GeneralizedLoft`)**：统一通过 $\mathcal{S}(s,t) = (1-t)\Gamma_0(s) + t\Gamma_1(s)$ 参数化表达正/斜/偏心圆锥与圆台、共顶弦半圆锥、半圆台斜通孔及多级同轴回转体，内置解析有向距离场（SDF）、解析梯度及闭式三角方程转向轮廓母线求解器（$A\cos\theta + B\sin\theta = C$）。
+   - **全对称跨视图射影升维 (`candidateLifter.ts`)**：对主-俯（V-H）、主-左（V-W）、俯-左（H-W）完全对称处理，自动配对生成多级同轴阶梯凸台、球/平底半球/圆锥+半球复合回转体、斜置锥台通孔以及受内部实线环锁定的有界盲槽/局部正交内孔。
+
+3. **Layer 3 — 三维曲边体元分解与布尔 CSP 约束求解层 (`solver`)**
+   - **曲边原子体元复形 (`CellComplex3D`)**：在两视图射影视觉包络（Visual Hull）内，采用**解析半空间符号向量** $\boldsymbol{\sigma}_k \in \{-1, +1\}^M$ 与自适应八叉树/曲面交点**见证点（Witness Points）**精确定义曲边原子体元，绝不使用粗糙多面体近似二次曲面。
+   - **预编译双向定量重投影评估器 (`reprojectionVerifier.ts`)**：基于视线射线采样点的 $O(M)$ 半空间查表与差分深度对 `(rayMinus, rayPlus)` 毫秒级计算已知两视图实线/虚线召回率与幻影线条惩罚，搜索全程零 Three.js 网格开销。
+   - **分支定界求解与布尔代数化简 (`cspOccupancySolver.ts`)**：结合单元传播（空视线剪枝 + 唯一支撑强制）与受保护分支定界搜索（内置迭代节点上限与超时熔断），按奥卡姆剃刀最少暴露边界面积排序输出最多 **Top 4** 零残差合法三维构型，并对相邻实心体元（$x_a = x_b = 1$）执行布尔代数合并消去内部共面缝隙。
+
+4. **Layer 4 — 三维曲面相贯线数值追踪层 (`ssi`)**
+   - **预测-校正牛顿步进追踪器 (`ssiMarchingTracer.ts`)**：沿双曲面叉积切向量 $\mathbf{t} = \nabla f_1 \times \nabla f_2$ 步进并执行二维 Newton-Raphson 投影校正，精确生成正交/偏心异径圆柱双曲鞍形相贯线、圆锥开槽截交抛物/椭圆弧等高阶空间交线。
+
+5. **Layer 5 — 定量消隐与 GB/T 标准图线重构层 (`hlr`)**
+   - **环形台阶肩面与薄壁刃口保护 (`silhouetteAndCrease.ts`)**：完整保留同轴阶梯圆柱/圆台外圈环形肩面（$r \in [R_1, R_2]$）的三维整圆边界，确保侧视图投射出不间断贯穿粗实线；同时对同径内孔与锥台顶面相接处（$r_{\text{hole}} \approx R_{\min}$）实施薄壁刃口保护，并将除料孔内壁母线严格裁剪在基体实心内部锁定为 `thin_dashed`。
+   - **二分跃变精化与图线合成 (`quantitativeHLR.ts` & `curveReconstruction2D.ts`)**：通过 6 步二分法精确定位遮挡可见性跃变点，严格按 `thick_solid > thin_dashed > center_dot_dash` 优先级合并共线线段与同心圆弧，输出纯净原生 CAD 图元与标准十字中心线/回转轴线。
+
+6. **Layer 6 — 锐边水密流形网格、智能诊断与 19 题基准自检层 (`mesh` / `diagnostics` / `benchmark`)**
+   - **统一锐边水密流形网格 (`manifoldMesher.ts`)**：严禁使用导致机械棱角圆钝的 Marching Cubes；针对任意凸/凹多边形棱柱、棱锥、棱台及多边形内腔通孔采用精确顶点半空间裁剪与二维耳切法（Ear-Clipping）三角剖分，结合开口轴向单侧空气延展与 28° 面积加权折痕分裂法向消除孔口锯齿毛刺；`Viewport3D` WebGL 渲染与 `.STL` 工业实体导出统一共用代数微融合 + BVH-CSG 精确裁剪流形网格器（强制校核 `Number.isFinite` 与外法向逆时针绕序 Outward CCW）。
+   - **GB/T 4458.1 智能诊断与一键修复 (`gbtDiagnostics.ts`)**：支持长对正（$\Delta X$）、高平齐（$\Delta Z$）、宽相等（$\Delta Y$）、悬空未闭合轮廓以及圆十字中心线/回转轴线缺失检测与单条精准修复。
+   - **19 项高阶魔鬼题基准自检 (`selfTestSuite.ts` & `BenchmarkSelfTestModal.tsx`)**：内置 19 道高难度工程制图变形题（覆盖正六棱柱单圆通孔、正六棱柱正交三通圆孔 45° 相贯、正六棱柱、横向六棱柱、正六棱锥、正六棱台、内六角通孔、三阶阶梯轴、偏心斜圆台、同径刃口圆台、锥球复合体、共弦双半圆斜孔、圆锥双曲线截交、马鞍相贯与多解枚举，同步接入前端题库与一键自检面板），实时校验体元数量、重投影精度、导出图线分类与流形三角面片水密性。
+
+---
+
+## 🖥️ 双端物理隔离与核心交互契约
+
+- **桌面端四视图工作站 (`src/desktop/DesktopApp.tsx`)**：四宫格标准三视图（主 V / 左 W / 俯 H）+ 交互式 PBR 3D 视窗（内置 React Error Boundary 异常隔离保护）、完整对象捕捉（OSNAP）、动态尺寸 HUD、键盘快捷键与右侧诊断/教学分步抽屉。
+- **手机竖屏触控专版 (`src/mobile/MobileApp.tsx`)**：独立 `100dvh` 竖屏组件树（宽屏支持 9:19.5 真机壳模拟预览），配备顶部三等关系对齐联动窗、单指 36px 防遮挡偏移十字准星、双指捏合缩放平移与底部双层大尺寸拇指工具栏。
+- **严格手动【推导】与自由二次编辑**：系统绝不在绘图过程中自动重算覆盖画布；仅在点击 **【推导】** 按钮时执行一次内核求解，推导写入目标视图的所有图元均支持自由点选、夹点编辑、修剪（Trim）、延伸（Extend）、擦除与 `Delete`/`Backspace` 删除。
 
 ---
 
@@ -66,80 +46,99 @@
 
 ```text
 ├── src/
+│   ├── kernel/                       # 6 层工业级计算几何与 3D 体元 CSP 逆向内核
+│   │   ├── types.ts                  # 内核全链路数据结构与类型契约
+│   │   ├── arrangement2d/            # Layer 1: 精确求交打断、DCEL 最小原子面与载体缝合还原
+│   │   │   ├── snapAndSplit.ts
+│   │   │   ├── dcelBuilder.ts
+│   │   │   └── carrierReconstruction.ts
+│   │   ├── lifting3d/                # Layer 2: GeneralizedLoft 算子、解析半空间与全对称跨视图升维
+│   │   │   ├── generalizedLoft.ts
+│   │   │   ├── surfacePrimitives.ts
+│   │   │   └── candidateLifter.ts
+│   │   ├── solver/                   # Layer 3: 曲边体元复形、预编译重投影验证器与分支定界 CSP 求解器
+│   │   │   ├── cellDecomposition.ts
+│   │   │   ├── reprojectionVerifier.ts
+│   │   │   └── cspOccupancySolver.ts
+│   │   ├── ssi/                      # Layer 4: 三维双曲面相贯线预测-校正牛顿追踪器
+│   │   │   └── ssiMarchingTracer.ts
+│   │   ├── hlr/                      # Layer 5: 锐边/转向轮廓提取、定量消隐与纯净 2D 图线合成
+│   │   │   ├── silhouetteAndCrease.ts
+│   │   │   ├── quantitativeHLR.ts
+│   │   │   └── curveReconstruction2D.ts
+│   │   ├── mesh/                     # Layer 6a: 锐边水密流形网格生成器与 ASCII STL 导出器
+│   │   │   └── manifoldMesher.ts
+│   │   ├── diagnostics/              # Layer 6b: GB/T 4458.1 三等关系与中心线智能诊断及自动修复
+│   │   │   └── gbtDiagnostics.ts
+│   │   ├── benchmark/                # Layer 6c: 19 道高难度工程制图基准测试集与自动化回归验证
+│   │   │   ├── benchmarkCases.ts
+│   │   │   └── selfTestSuite.ts
+│   │   ├── pipeline.ts               # 端到端逆向重建与第三视图推导主编排管线
+│   │   └── index.ts                  # 内核统一导出入口
+│   ├── desktop/
+│   │   └── DesktopApp.tsx            # 桌面端四视图 CAD 工作站（物理隔离）
+│   ├── mobile/
+│   │   ├── MobileApp.tsx             # 手机竖屏触控专版工作台（物理隔离）
+│   │   └── MobileCadCanvas2D.tsx     # 移动端双指缩放与防遮挡准星画布
 │   ├── components/
-│   │   ├── CadViewport2D.tsx     # 2D 正交视图画布（OSNAP、动态 HUD、复制粘贴、双指触控缩放）
-│   │   ├── Viewport3D.tsx        # 3D 交互式视窗（Three.js + three-bvh-csg 实时布尔运算与多材质渲染）
-│   │   ├── SettingsModal.tsx     # 系统设置、教学手册与 Windows (.exe) / Android (.apk) 打包配置
-│   │   └── FileExplorerPanel.tsx # 工程文件管理面板（支持挂载本地磁盘目录）
+│   │   ├── CadViewport2D.tsx         # 桌面端 2D 正交视图交互画布
+│   │   ├── Viewport3D.tsx            # Three.js PBR 水密流形渲染视窗（含 ErrorBoundary 保护）
+│   │   ├── BenchmarkSelfTestModal.tsx# 19 项内核基准一键自检与载入预览面板
+│   │   ├── DualDownloadModal.tsx     # DXF / SVG / PNG / 水密 STL / JSON 双端导出中心
+│   │   ├── FileExplorerPanel.tsx     # 本地工程文件管理面板
+│   │   └── SettingsModal.tsx         # 系统参数、多语言与跨平台打包配置
 │   ├── utils/
-│   │   ├── csgPrimitives.ts      # 底层 3D 解析 SDF 几何库、26 邻域表面判定、相贯采样与消隐裁剪器
-│   │   ├── geometryKernel.ts     # 上层 2D 闭合环提取、跨视图特征配对推导、双向重投影诊断与修复
-│   │   ├── exporters.ts          # 标准 CAD (.DXF)、矢量图 (.SVG)、三维网格 (.STL) 与项目 (.JSON) 导出
-│   │   └── i18n.ts               # 多语言字典（简体中文 / 繁體中文 / English）
+│   │   ├── geometryKernel.ts         # 兼容前端调用的内核门面 API 与 2D 交互几何工具（OSNAP/Trim/Extend/Offset）
+│   │   ├── csgPrimitives.ts          # 3D 原语与多边形采样门面桥接层
+│   │   ├── exporters.ts              # 标准 DXF / SVG / 高清 PNG / 水密流形 STL 导出器
+│   │   └── i18n.ts                   # 简体中文 / 繁體中文 / English 国际化字典
 │   ├── data/
-│   │   └── presets.ts            # 经典画法几何与机械制图题库案例
+│   │   └── presets.ts                # 经典教材题库 + 19 道高阶计算几何基准测试案例
 │   ├── types/
-│   │   └── cad.ts                # 核心 2D 图元、3D CSG 原语与诊断数据结构定义
-│   └── App.tsx                   # 主工作台布局（桌面四视图 & 手机 Android 触控单视图/多视图切换）
+│   │   └── cad.ts                    # 全局 CAD 图元、三维原语与诊断类型定义
+│   ├── App.tsx                       # 顶层状态协调与双端路由入口
+│   └── main.tsx                      # 应用挂载入口
 ├── electron/
-│   └── main.cjs                  # Electron 桌面端主进程入口
-├── capacitor.config.json         # Capacitor Android 移动端打包配置
-├── build-android-apk.bat         # Android (.apk) 一键打包脚本
-└── package.json                  # 项目依赖与构建脚本
+│   └── main.cjs                      # Electron Windows 桌面端主进程
+├── capacitor.config.json             # Capacitor Android 移动端配置
+└── package.json                      # 依赖配置与构建脚本
 ```
 
 ---
 
-## 🚀 本地开发与运行
+## ⌨️ 桌面端键盘快捷键
 
-### 环境要求
-- **Node.js** >= 18.0.0
-- **npm** >= 9.0.0
+| 快捷键 | 功能说明 | 备注 |
+| :--- | :--- | :--- |
+| **`1` / `2` / `3` / `4`** | 切换 **粗实线 / 细虚线 / 细点画线 / 辅助线** | 选中图元时可直接批量修改线型 |
+| **`V` / `H`** | **选择工具** / **手型平移** | 支持夹点拖拽、窗口选与交叉选 |
+| **`L` / `R` / `P`** | **直线** / **矩形** / **正多边形** | 直线支持连续折线绘制（右键或 `Enter` 结束） |
+| **`C` / `A` / `G`** | **圆** / **圆弧** / **几何公切线** | 自动计算并吸附圆周精确切点 |
+| **`T` / `E` / `O` / `D`** | **修剪 (Trim)** / **延伸 (Extend)** / **偏移 (Offset)** / **擦除** | 实时精确交点裁剪与同心偏移 |
+| **`F8`** | 开启 / 关闭 **正交锁定 (Ortho)** | 按住 `Shift` 支持 45° 极轴锁定 |
+| **`Ctrl + Z` / `Ctrl + Y`** | **撤销** / **重做** | 最多保存 100 步历史栈 |
+| **`Delete` / `Backspace`** | **删除**当前选中的图元（含推导生成的图元） | 绝不触发自动重算回弹 |
 
-### 启动开发服务器
+---
+
+## 🚀 本地开发、验证与跨平台构建
+
 ```bash
-# 1. 安装依赖（推荐使用国内阿里云镜像加速）
-npm install --registry=https://registry.npmmirror.com/
+# 1. 安装依赖
+npm install
 
-# 2. 启动本地开发服务器（默认监听 http://localhost:3000）
+# 2. 启动开发服务器（端口 3000）
 npm run dev
 
-# 3. 生产环境前端构建与类型检查
-npm run build
+# 3. TypeScript 静态类型检查与生产构建
 npm run lint
-```
-
----
-
-## 📦 跨平台打包指南
-
-### 一、打包 Windows 桌面端 (`.exe`)
-项目内置 Electron + `electron-builder` 打包配置，支持同时生成 **免安装便携版 (`Portable .exe`)** 与 **安装向导版 (`NSIS .exe`)**：
-
-```bash
-# 设置国内镜像并构建 Windows 64 位 .exe
-npm install -D electron electron-builder --registry=https://registry.npmmirror.com/
-npm run build:exe
-```
-> 您也可以直接在软件右上角点击 **【设置】->【打包配置】->【下载 Windows (.exe) 构建脚本 (.bat)】**，双击运行即可完成构建。构建产物位于 `release/` 目录。
-
-### 二、打包 Android 手机端 (`.apk`)
-项目已针对 Android 手机端适配了专属触控操作模式（双指捏合缩放平移、单视图全屏切换栏、底部悬浮复制/粘贴/完成线段操作栏），并配置了 `capacitor.config.json` 与一键构建脚本 `build-android-apk.bat`：
-
-1. 确保本地已安装 **JDK 17+** 与 **Android SDK**（或 Android Studio）。
-2. 在项目根目录直接双击运行 `build-android-apk.bat`，或执行以下命令：
-```bash
-npm install @capacitor/core @capacitor/cli @capacitor/android --registry=https://registry.npmmirror.com/
 npm run build
-npx cap add android
-npx cap sync android
-cd android && ./gradlew assembleDebug
 ```
-3. 构建完成后，生成的安装包位于：
-   `android/app/build/outputs/apk/debug/app-debug.apk`
-   将该 `.apk` 文件发送至 Android 手机安装后，应用会自动进入 **手机 Android 触控模式**。
+
+- **Windows 桌面端打包 (`.exe`)**：`npm run build:exe`（基于 Electron + `electron-builder`）。
+- **Android 移动端打包 (`.apk`)**：执行 `build-android-apk.bat` 或通过 Capacitor 同步构建 `npx cap sync android`。
 
 ---
 
 ## 📄 开源协议
-本项目采用 MIT License 开源，欢迎用于工程制图教学、CAD 算法研究与二次开发。
+本项目采用 MIT License 开源，适用于画法几何教学、工程制图智能批改与计算几何固态建模研究。

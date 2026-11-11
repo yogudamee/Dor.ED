@@ -1,9 +1,8 @@
 import dotenv from 'dotenv';
 import express from 'express';
+import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI } from '@google/genai';
 
 dotenv.config();
 
@@ -14,9 +13,10 @@ const __dirname = path.dirname(__filename);
 const DEFAULT_ZHIPU_API_KEY = process.env.ZHIPU_API_KEY || '';
 const ZHIPU_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 
-function getGeminiClient() {
+async function getGeminiClient() {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') return null;
+  const { GoogleGenAI } = await import('@google/genai');
   return new GoogleGenAI({
     apiKey,
     httpOptions: {
@@ -29,9 +29,13 @@ function getGeminiClient() {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json({ limit: '10mb' }));
+
+  app.get('/api/health', (_req, res) => {
+    res.json({ ok: true });
+  });
 
   // Domestic VPN-Free Zhipu AI Endpoint (glm-4.5-flash with thinking & glm-4v-flash) + Offline Fallback
   app.post('/api/ai/analyze-views', async (req, res) => {
@@ -114,7 +118,7 @@ ${JSON.stringify(diagnostics)}`;
     }
 
     // 2. Fallback to Gemini API if GEMINI_API_KEY is available in cloud environment
-    const geminiClient = getGeminiClient();
+    const geminiClient = await getGeminiClient();
     if (geminiClient) {
       try {
         const response = await geminiClient.models.generateContent({
@@ -161,20 +165,48 @@ ${JSON.stringify(diagnostics)}`;
     });
   });
 
-  const httpServer = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Dor.ED Server running on http://0.0.0.0:${PORT}`);
-  });
+  const httpServer = http.createServer(app);
+  let activeVite: { close: () => Promise<void> } | null = null;
 
   if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
-        watch: process.env.DISABLE_HMR === 'true' ? null : {},
-      },
-      appType: 'spa',
+    let viteInitPromise: Promise<any> | null = null;
+
+    const getOrCreateVite = () => {
+      if (!viteInitPromise) {
+        viteInitPromise = (async () => {
+          const { createServer: createViteServer } = await import('vite');
+          const vite = await createViteServer({
+            server: {
+              middlewareMode: true,
+              hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
+              watch: process.env.DISABLE_HMR === 'true' ? null : {},
+            },
+            appType: 'spa',
+          });
+          activeVite = vite;
+          // Pre-warm entry module transform cache asynchronously
+          vite.warmupRequest('/src/main.tsx').catch(() => {});
+          return vite;
+        })().catch((err) => {
+          console.error('Vite initialization error, resetting for retry:', err);
+          viteInitPromise = null;
+          throw err;
+        });
+      }
+      return viteInitPromise;
+    };
+
+    // Kick off Vite startup eagerly without risking unhandled rejection crashes
+    getOrCreateVite().catch(() => {});
+
+    app.use(async (req, res, next) => {
+      try {
+        const vite = await getOrCreateVite();
+        vite.middlewares(req, res, next);
+      } catch (err) {
+        next(err);
+      }
     });
-    app.use(vite.middlewares);
   } else {
     const distPath = path.join(__dirname, 'dist');
     app.use(express.static(distPath));
@@ -182,6 +214,41 @@ ${JSON.stringify(diagnostics)}`;
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  let listenAttempts = 0;
+  const maxListenAttempts = 6;
+
+  httpServer.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE' && listenAttempts < maxListenAttempts) {
+      listenAttempts += 1;
+      setTimeout(() => {
+        httpServer.close();
+        httpServer.listen(PORT, '0.0.0.0');
+      }, 300);
+      return;
+    }
+    console.error('HTTP Server failed to bind port:', err);
+    process.exit(1);
+  });
+
+  // Bind port 3000 immediately so Nginx never sees 502 Connection Refused or enters warmup.html reload loops
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`Dor.ED Server listening on http://0.0.0.0:${PORT}`);
+  });
+
+  const shutdown = () => {
+    httpServer.close(() => {
+      if (activeVite) {
+        activeVite.close().finally(() => process.exit(0));
+      } else {
+        process.exit(0);
+      }
+    });
+    setTimeout(() => process.exit(0), 1500).unref();
+  };
+
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
 startServer();

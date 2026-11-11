@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -22,6 +22,7 @@ import {
   Scissors,
   Settings,
   ShieldAlert,
+  ShieldCheck,
   Smartphone,
   Square,
   StepForward,
@@ -40,8 +41,11 @@ import {
   ViewType,
 } from '../types/cad';
 import { CadViewport2D } from '../components/CadViewport2D';
-import { Viewport3D } from '../components/Viewport3D';
 import { FileExplorerPanel } from '../components/FileExplorerPanel';
+
+const Viewport3D = lazy(() =>
+  import('../components/Viewport3D').then((m) => ({ default: m.Viewport3D }))
+);
 
 export interface DesktopAppProps {
   dict: any;
@@ -91,6 +95,7 @@ export interface DesktopAppProps {
   materialPreset: string;
   onOpenDownloadModal: () => void;
   onOpenSettingsModal: () => void;
+  onOpenBenchmarkModal: () => void;
   onSwitchToMobile: () => void;
 }
 
@@ -142,9 +147,11 @@ export const DesktopApp: React.FC<DesktopAppProps> = ({
   materialPreset,
   onOpenDownloadModal,
   onOpenSettingsModal,
+  onOpenBenchmarkModal,
   onSwitchToMobile,
 }) => {
   const [filePanelOpen, setFilePanelOpen] = useState(false);
+  const [libraryFilter, setLibraryFilter] = useState<'all' | 'classic' | 'benchmark'>('all');
   const [hoveredToolKey, setHoveredToolKey] = useState<string | null>(null);
   const [sharedZoom, setSharedZoom] = useState(3);
   const [sharedPan, setSharedPan] = useState({ x: 36, y: 0 });
@@ -372,7 +379,7 @@ export const DesktopApp: React.FC<DesktopAppProps> = ({
           </div>
         )}
 
-        {/* Right: Platform Switch + Diagnose + Derive + Dual Download/Export + Settings */}
+        {/* Right: Platform Switch + Benchmark + Diagnose + Derive + Dual Download/Export + Settings */}
         <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={onSwitchToMobile}
@@ -381,6 +388,15 @@ export const DesktopApp: React.FC<DesktopAppProps> = ({
           >
             <Smartphone className="w-3.5 h-3.5" />
             <span>📱 切换至手机版</span>
+          </button>
+
+          <button
+            onClick={onOpenBenchmarkModal}
+            title="运行 12 项高阶计算几何与 CSP 求解内核基准自检"
+            className="px-2.5 py-1.5 rounded-lg bg-[#161F2E] hover:bg-[#1E293B] border border-[#38BDF8]/45 text-xs font-medium text-[#38BDF8] hover:text-white flex items-center gap-1.5 transition-colors whitespace-nowrap"
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+            <span>基准自检</span>
           </button>
 
           {!isShowingLibraryGrid && (
@@ -425,50 +441,100 @@ export const DesktopApp: React.FC<DesktopAppProps> = ({
       {isShowingLibraryGrid ? (
         <div className="flex-1 overflow-y-auto p-8 bg-[#0B0F17]">
           <div className="max-w-5xl mx-auto space-y-6">
-            <div>
-              <h1 className="text-xl font-bold text-white font-display">
-                {dict.libraryView.title}
-              </h1>
-              <p className="text-xs text-[#94A3B8] mt-1">{dict.libraryView.subtitle}</p>
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h1 className="text-xl font-bold text-white font-display">
+                  {dict.libraryView.title}
+                </h1>
+                <p className="text-xs text-[#94A3B8] mt-1">{dict.libraryView.subtitle}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="flex items-center bg-[#111827] p-0.5 rounded-lg border border-[#263244] text-xs">
+                  {(
+                    [
+                      { id: 'all', label: `全部 (${localizedPresets.length})` },
+                      {
+                        id: 'classic',
+                        label: `教材与诊断 (${localizedPresets.filter((p) => p.category !== 'benchmark').length})`,
+                      },
+                      {
+                        id: 'benchmark',
+                        label: `高阶基准集 (${localizedPresets.filter((p) => p.category === 'benchmark').length})`,
+                      },
+                    ] as const
+                  ).map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setLibraryFilter(tab.id)}
+                      className={`px-2.5 py-1 rounded-md font-medium transition-colors whitespace-nowrap ${
+                        libraryFilter === tab.id
+                          ? 'bg-[#0284C7] text-white'
+                          : 'text-[#94A3B8] hover:text-white'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={onOpenBenchmarkModal}
+                  className="px-3.5 py-1.5 rounded-lg bg-[#059669] hover:bg-[#047857] text-xs font-semibold text-white flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>一键运行 12 题基准自检</span>
+                </button>
+              </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {localizedPresets.map((preset, index) => (
-                <div
-                  key={preset.id}
-                  onClick={() => {
-                    onEnterLibraryCase(preset);
-                    const firstSol = preset.solutions[0];
-                    setShowProjectionSteps(true);
-                    setActiveStepIndex(
-                      firstSol?.projectionSteps.length
-                        ? firstSol.projectionSteps.length - 1
-                        : 0
-                    );
-                  }}
-                  className="group p-5 rounded-xl bg-[#111827] hover:bg-[#161F2E] border border-[#263244] hover:border-[#38BDF8] cursor-pointer transition-all flex flex-col justify-between space-y-4"
-                >
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-xs font-mono text-[#38BDF8]">
-                      <span>0{index + 1}</span>
-                      <span>{preset.badge}</span>
+              {localizedPresets
+                .filter((p) =>
+                  libraryFilter === 'all'
+                    ? true
+                    : libraryFilter === 'benchmark'
+                    ? p.category === 'benchmark'
+                    : p.category !== 'benchmark'
+                )
+                .map((preset, index) => (
+                  <div
+                    key={preset.id}
+                    onClick={() => {
+                      onEnterLibraryCase(preset);
+                      const firstSol = preset.solutions[0];
+                      setShowProjectionSteps(true);
+                      setActiveStepIndex(
+                        firstSol?.projectionSteps.length
+                          ? firstSol.projectionSteps.length - 1
+                          : 0
+                      );
+                    }}
+                    className="group p-5 rounded-xl bg-[#111827] hover:bg-[#161F2E] border border-[#263244] hover:border-[#38BDF8] cursor-pointer transition-all flex flex-col justify-between space-y-4"
+                  >
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-xs font-mono text-[#38BDF8]">
+                        <span>{String(index + 1).padStart(2, '0')}</span>
+                        <span>{preset.badge}</span>
+                      </div>
+                      <h2 className="text-sm font-semibold text-white group-hover:text-[#38BDF8] transition-colors">
+                        {preset.name}
+                      </h2>
+                      <p className="text-xs text-[#94A3B8] leading-relaxed">
+                        {preset.description}
+                      </p>
                     </div>
-                    <h2 className="text-sm font-semibold text-white group-hover:text-[#38BDF8] transition-colors">
-                      {preset.name}
-                    </h2>
-                    <p className="text-xs text-[#94A3B8] leading-relaxed">
-                      {preset.description}
-                    </p>
+                    <div className="pt-2 border-t border-[#1E293B] flex items-center justify-between">
+                      <span className="text-[11px] font-mono text-[#64748B]">
+                        {preset.solutions.length > 0
+                          ? `${preset.solutions.length} ${dict.libraryView.solutionsTitle}`
+                          : 'CSP 体元约束实时求解 (Top ≤ 4)'}
+                      </span>
+                      <span className="px-3 py-1 rounded bg-[#0284C7] text-xs font-medium text-white">
+                        {dict.libraryView.enterBtn}
+                      </span>
+                    </div>
                   </div>
-                  <div className="pt-2 border-t border-[#1E293B] flex items-center justify-between">
-                    <span className="text-[11px] font-mono text-[#64748B]">
-                      {preset.solutions.length} {dict.libraryView.solutionsTitle}
-                    </span>
-                    <span className="px-3 py-1 rounded bg-[#0284C7] text-xs font-medium text-white">
-                      {dict.libraryView.enterBtn}
-                    </span>
-                  </div>
-                </div>
-              ))}
+                ))}
             </div>
           </div>
         </div>
@@ -721,19 +787,27 @@ export const DesktopApp: React.FC<DesktopAppProps> = ({
                     : 'relative w-full h-full min-h-0'
                 }
               >
-                <Viewport3D
-                  primitives={currentSolution?.primitives3D || []}
-                  hoveredFeatureId={hoveredFeatureId}
-                  isFullscreen={is3DFullscreen}
-                  onToggleFullscreen={() => setIs3DFullscreen((prev) => !prev)}
-                  xRayMode={xRayMode}
-                  onToggleXRay={() => setXRayMode((prev) => !prev)}
-                  materialPreset={materialPreset as any}
-                  labels={dict.view3D}
-                />
+                <Suspense
+                  fallback={
+                    <div className="w-full h-full bg-[#0D131F] flex items-center justify-center text-xs text-[#64748B]">
+                      3D 视窗就绪中...
+                    </div>
+                  }
+                >
+                  <Viewport3D
+                    primitives={currentSolution?.primitives3D || []}
+                    hoveredFeatureId={hoveredFeatureId}
+                    isFullscreen={is3DFullscreen}
+                    onToggleFullscreen={() => setIs3DFullscreen((prev) => !prev)}
+                    xRayMode={xRayMode}
+                    onToggleXRay={() => setXRayMode((prev) => !prev)}
+                    materialPreset={materialPreset as any}
+                    labels={dict.view3D}
+                  />
+                </Suspense>
 
                 {appMode === 'free' && currentSolutions.length > 1 && (
-                  <div className="absolute bottom-2.5 left-2.5 right-2.5 z-50 pointer-events-auto flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-[#0D131F]/95 backdrop-blur-md border border-[#38BDF8]/40 shadow-lg">
+                  <div className="absolute bottom-2.5 left-2.5 right-2.5 z-50 pointer-events-auto flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-[#0D131F]/95 border border-[#38BDF8]/40 shadow-lg">
                     <span className="text-[11px] font-medium text-[#38BDF8] shrink-0">
                       {dict.libraryView.solutionsTitle} ({currentSolutions.length})
                     </span>

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import {
   CadEntity,
   DiagnosticIssue,
@@ -16,17 +16,26 @@ import {
   fixSingleDiagnosticIssue,
 } from './utils/geometryKernel';
 import { I18N, Language } from './utils/i18n';
-import {
-  downloadTextFile,
-  exportToDXF,
-  exportToPNG,
-  exportToSTL,
-  exportToSVG,
-} from './utils/exporters';
 import { DesktopApp } from './desktop/DesktopApp';
-import { MobileApp } from './mobile/MobileApp';
-import { DualDownloadModal } from './components/DualDownloadModal';
-import { SettingsModal } from './components/SettingsModal';
+
+const MobileApp = lazy(() =>
+  import('./mobile/MobileApp').then((m) => ({ default: m.MobileApp }))
+);
+const DualDownloadModal = lazy(() =>
+  import('./components/DualDownloadModal').then((m) => ({
+    default: m.DualDownloadModal,
+  }))
+);
+const SettingsModal = lazy<React.ComponentType<any>>(() =>
+  import('./components/SettingsModal').then((m) => ({
+    default: m.SettingsModal,
+  }))
+);
+const BenchmarkSelfTestModal = lazy(() =>
+  import('./components/BenchmarkSelfTestModal').then((m) => ({
+    default: m.BenchmarkSelfTestModal,
+  }))
+);
 
 const INITIAL_FREE_ENTITIES: CadEntity[] = [];
 
@@ -164,6 +173,7 @@ export default function App() {
 
   const [downloadModalOpen, setDownloadModalOpen] = useState<boolean>(false);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
+  const [benchmarkModalOpen, setBenchmarkModalOpen] = useState<boolean>(false);
 
   const commitFreeEntities = (next: CadEntity[], options?: any) => {
     if (!options?.replaceLast) {
@@ -254,7 +264,9 @@ export default function App() {
       );
     }
     if (activeLibraryCase) {
-      setLibrarySolutions(activeLibraryCase.solutions);
+      if (activeLibraryCase.solutions.length > 0) {
+        setLibrarySolutions(activeLibraryCase.solutions);
+      }
       setLibraryDiagnostics(
         diagnoseThreeViews(
           libraryEntities,
@@ -266,7 +278,15 @@ export default function App() {
   }, [language, activeLibraryCase]);
 
   const handleEnterLibraryCase = (preset: PresetCase) => {
-    const firstSol = preset.solutions[0];
+    const resolvedSolutions =
+      preset.solutions.length > 0
+        ? preset.solutions
+        : deriveFromCustomViews(
+            preset.entities,
+            preset.knownViews,
+            preset.targetView
+          );
+    const firstSol = resolvedSolutions[0];
     const clonedEntities: CadEntity[] = JSON.parse(
       JSON.stringify(
         preset.category !== 'diagnostic' && firstSol
@@ -278,7 +298,7 @@ export default function App() {
     setLibraryEntities(clonedEntities);
     setLibraryPast([]);
     setLibraryFuture([]);
-    setLibrarySolutions(preset.solutions);
+    setLibrarySolutions(resolvedSolutions);
     setLibrarySolutionIdx(0);
     setLibraryDiagnostics(
       diagnoseThreeViews(clonedEntities, preset.knownViews, language)
@@ -325,16 +345,26 @@ export default function App() {
         setFreeDiagnostics([]);
       }
     } else if (activeLibraryCase) {
-      const sols = activeLibraryCase.solutions;
+      const nonTarget = libraryEntities.filter(
+        (e) =>
+          e.view !== activeLibraryCase.targetView && e.source !== 'derived'
+      );
+      const templateKnownCount = activeLibraryCase.entities.filter(
+        (e) => e.view !== activeLibraryCase.targetView
+      ).length;
+      const sols =
+        activeLibraryCase.solutions.length > 0 &&
+        nonTarget.length === templateKnownCount
+          ? activeLibraryCase.solutions
+          : deriveFromCustomViews(
+              nonTarget,
+              activeLibraryCase.knownViews,
+              activeLibraryCase.targetView
+            );
       setLibrarySolutions(sols);
       setLibrarySolutionIdx(0);
       if (sols[0]) {
-        const merged = [
-          ...libraryEntities.filter(
-            (e) => e.view !== activeLibraryCase.targetView
-          ),
-          ...sols[0].derivedEntities,
-        ];
+        const merged = [...nonTarget, ...sols[0].derivedEntities];
         commitLibraryEntities(merged);
         setLibraryDiagnostics([]);
       }
@@ -508,9 +538,16 @@ export default function App() {
     }
   };
 
-  const handleExportFormat = (
+  const handleExportFormat = async (
     fmt: 'svg' | 'dxf' | 'png' | 'stl' | 'json'
   ) => {
+    const {
+      downloadTextFile,
+      exportToDXF,
+      exportToPNG,
+      exportToSTL,
+      exportToSVG,
+    } = await import('./utils/exporters');
     const baseTitle =
       appMode === 'free'
         ? freeFileName.replace(/\.json$/i, '')
@@ -574,55 +611,64 @@ export default function App() {
   return (
     <>
       {mobileMode ? (
-        <MobileApp
-          dict={dict}
-          appMode={appMode}
-          onChangeAppMode={(mode) => {
-            setAppMode(mode);
-            if (mode === 'free') setActiveLibraryCaseId(null);
-          }}
-          localizedPresets={localizedPresets}
-          activeLibraryCase={activeLibraryCase}
-          onEnterLibraryCase={handleEnterLibraryCase}
-          onExitLibraryCase={handleExitLibraryCase}
-          currentEntities={currentEntities}
-          onChangeEntities={setCurrentEntities}
-          onClearCanvas={handleNewBlankFree}
-          currentSolutions={currentSolutions}
-          currentSolutionIndex={currentSolutionIndex}
-          onSelectSolution={handleSelectSolution}
-          currentDiagnostics={currentDiagnostics}
-          diagSheetOpen={freeDiagDrawerOpen}
-          onSetDiagSheetOpen={setFreeDiagDrawerOpen}
-          onDiagnose={handleDiagnose}
-          onDerive={handleDerive}
-          onAutoFix={handleAutoFix}
-          onFixSingleIssue={handleFixSingleIssue}
-          onAiAnalyze={handleAiAnalyze}
-          aiLoading={aiLoading}
-          aiModel={aiModel}
-          aiAnalysisResult={aiAnalysisResult}
-          canUndo={canUndo}
-          canRedo={canRedo}
-          onUndo={handleUndo}
-          onRedo={handleRedo}
-          activeTool={activeTool}
-          onSetActiveTool={setActiveTool}
-          activeLineType={activeLineType}
-          onSetActiveLineType={setActiveLineType}
-          enabledSnaps={enabledSnaps}
-          onToggleSnap={toggleSnap}
-          orthoEnabled={orthoEnabled}
-          onSetOrthoEnabled={setOrthoEnabled}
-          gridStep={gridStep}
-          polygonSides={polygonSides}
-          offsetDistance={offsetDistance}
-          snapTolerance={snapTolerance}
-          materialPreset={materialPreset}
-          onOpenDownloadModal={() => setDownloadModalOpen(true)}
-          onOpenSettingsModal={() => setSettingsOpen(true)}
-          onSwitchToDesktop={() => setMobileMode(false)}
-        />
+        <Suspense
+          fallback={
+            <div className="w-screen h-screen bg-[#0B0F17] flex items-center justify-center text-xs text-[#94A3B8]">
+              Dor.ED 移动触控工作台加载中...
+            </div>
+          }
+        >
+          <MobileApp
+            dict={dict}
+            appMode={appMode}
+            onChangeAppMode={(mode) => {
+              setAppMode(mode);
+              if (mode === 'free') setActiveLibraryCaseId(null);
+            }}
+            localizedPresets={localizedPresets}
+            activeLibraryCase={activeLibraryCase}
+            onEnterLibraryCase={handleEnterLibraryCase}
+            onExitLibraryCase={handleExitLibraryCase}
+            currentEntities={currentEntities}
+            onChangeEntities={setCurrentEntities}
+            onClearCanvas={handleNewBlankFree}
+            currentSolutions={currentSolutions}
+            currentSolutionIndex={currentSolutionIndex}
+            onSelectSolution={handleSelectSolution}
+            currentDiagnostics={currentDiagnostics}
+            diagSheetOpen={freeDiagDrawerOpen}
+            onSetDiagSheetOpen={setFreeDiagDrawerOpen}
+            onDiagnose={handleDiagnose}
+            onDerive={handleDerive}
+            onAutoFix={handleAutoFix}
+            onFixSingleIssue={handleFixSingleIssue}
+            onAiAnalyze={handleAiAnalyze}
+            aiLoading={aiLoading}
+            aiModel={aiModel}
+            aiAnalysisResult={aiAnalysisResult}
+            canUndo={canUndo}
+            canRedo={canRedo}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
+            activeTool={activeTool}
+            onSetActiveTool={setActiveTool}
+            activeLineType={activeLineType}
+            onSetActiveLineType={setActiveLineType}
+            enabledSnaps={enabledSnaps}
+            onToggleSnap={toggleSnap}
+            orthoEnabled={orthoEnabled}
+            onSetOrthoEnabled={setOrthoEnabled}
+            gridStep={gridStep}
+            polygonSides={polygonSides}
+            offsetDistance={offsetDistance}
+            snapTolerance={snapTolerance}
+            materialPreset={materialPreset}
+            onOpenDownloadModal={() => setDownloadModalOpen(true)}
+            onOpenSettingsModal={() => setSettingsOpen(true)}
+            onOpenBenchmarkModal={() => setBenchmarkModalOpen(true)}
+            onSwitchToDesktop={() => setMobileMode(false)}
+          />
+        </Suspense>
       ) : (
         <DesktopApp
           dict={dict}
@@ -675,50 +721,76 @@ export default function App() {
           materialPreset={materialPreset}
           onOpenDownloadModal={() => setDownloadModalOpen(true)}
           onOpenSettingsModal={() => setSettingsOpen(true)}
+          onOpenBenchmarkModal={() => setBenchmarkModalOpen(true)}
           onSwitchToMobile={() => setMobileMode(true)}
         />
       )}
 
       {/* Shared Dual-Platform Download & Export Hub */}
-      <DualDownloadModal
-        isOpen={downloadModalOpen}
-        onClose={() => setDownloadModalOpen(false)}
-        onExportFormat={handleExportFormat}
-        onImportJson={handleImportJson}
-        isMobileView={mobileMode}
-        onSwitchPlatform={(targetMobile) => setMobileMode(targetMobile)}
-      />
+      {downloadModalOpen && (
+        <Suspense fallback={null}>
+          <DualDownloadModal
+            isOpen={downloadModalOpen}
+            onClose={() => setDownloadModalOpen(false)}
+            onExportFormat={handleExportFormat}
+            onImportJson={handleImportJson}
+            isMobileView={mobileMode}
+            onSwitchPlatform={(targetMobile) => setMobileMode(targetMobile)}
+          />
+        </Suspense>
+      )}
 
       {/* Shared Settings Modal */}
-      <SettingsModal
-        isOpen={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        language={language}
-        onChangeLanguage={setLanguage}
-        gridStep={gridStep}
-        onChangeGridStep={setGridStep}
-        offsetDistance={offsetDistance}
-        onChangeOffsetDistance={setOffsetDistance}
-        polygonSides={polygonSides}
-        onChangePolygonSides={setPolygonSides}
-        snapTolerance={snapTolerance}
-        onChangeSnapTolerance={setSnapTolerance}
-        autoDerive={autoDerive}
-        onChangeAutoDerive={setAutoDerive}
-        showDynamicHUD={showDynamicHUD}
-        onChangeShowDynamicHUD={setShowDynamicHUD}
-        showAlignmentRays={showAlignmentRays}
-        onChangeShowAlignmentRays={setShowAlignmentRays}
-        materialPreset={materialPreset as any}
-        onChangeMaterialPreset={setMaterialPreset}
-        mobileMode={mobileMode}
-        onChangeMobileMode={setMobileMode}
-        aiModel={aiModel}
-        onChangeAiModel={setAiModel}
-        aiThinking={aiThinking}
-        onChangeAiThinking={setAiThinking}
-        dict={dict.settingsModal}
-      />
+      {settingsOpen && (
+        <Suspense fallback={null}>
+          <SettingsModal
+            isOpen={settingsOpen}
+            onClose={() => setSettingsOpen(false)}
+            language={language}
+            onChangeLanguage={setLanguage}
+            gridStep={gridStep}
+            onChangeGridStep={setGridStep}
+            offsetDistance={offsetDistance}
+            onChangeOffsetDistance={setOffsetDistance}
+            polygonSides={polygonSides}
+            onChangePolygonSides={setPolygonSides}
+            snapTolerance={snapTolerance}
+            onChangeSnapTolerance={setSnapTolerance}
+            autoDerive={autoDerive}
+            onChangeAutoDerive={setAutoDerive}
+            showDynamicHUD={showDynamicHUD}
+            onChangeShowDynamicHUD={setShowDynamicHUD}
+            showAlignmentRays={showAlignmentRays}
+            onChangeShowAlignmentRays={setShowAlignmentRays}
+            materialPreset={materialPreset as any}
+            onChangeMaterialPreset={setMaterialPreset}
+            mobileMode={mobileMode}
+            onChangeMobileMode={setMobileMode}
+            aiModel={aiModel}
+            onChangeAiModel={setAiModel}
+            aiThinking={aiThinking}
+            onChangeAiThinking={setAiThinking}
+            dict={dict.settingsModal}
+          />
+        </Suspense>
+      )}
+
+      {/* 12-Case Computational Geometry & CSP Kernel Self-Test Modal */}
+      {benchmarkModalOpen && (
+        <Suspense fallback={null}>
+          <BenchmarkSelfTestModal
+            isOpen={benchmarkModalOpen}
+            onClose={() => setBenchmarkModalOpen(false)}
+            onLoadBenchmarkCase={(caseId) => {
+              const found = localizedPresets.find((p) => p.id === caseId);
+              if (found) {
+                setAppMode('library');
+                handleEnterLibraryCase(found);
+              }
+            }}
+          />
+        </Suspense>
+      )}
     </>
   );
 }

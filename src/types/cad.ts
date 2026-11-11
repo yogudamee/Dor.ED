@@ -85,8 +85,8 @@ export interface CadArcEntity {
   lineType: LineType;
   center: Point2D;
   radius: number;
-  startAngle: number; // radians
-  endAngle: number;   // radians
+  startAngle: number; // radians in [0, 2π), advancing +dθ in (u, v)
+  endAngle: number;   // radians in [0, 2π)
   source?: 'user' | 'derived' | 'template';
   featureId?: string;
   featureLabel?: string;
@@ -117,9 +117,47 @@ export interface LoopCurveSegment2D {
   p2: Point2D;
   center?: Point2D;
   radius?: number;
-  startAngle?: number; // original CCW startAngle of the CadArcEntity
-  endAngle?: number;   // original CCW endAngle of the CadArcEntity
-  ccw?: boolean;       // true if p1 -> p2 traverses from startAngle to endAngle CCW, false if CW
+  startAngle?: number; // original +dθ startAngle of the CadArcEntity
+  endAngle?: number;   // original +dθ endAngle of the CadArcEntity
+  ccw?: boolean;       // true if p1 -> p2 traverses from startAngle to endAngle (+dθ), false if -dθ
+}
+
+export interface GeneralizedLoftPayload {
+  axis: 'X' | 'Y' | 'Z';
+  w0: number;
+  w1: number;
+  section0: {
+    kind: 'circle' | 'semicircle' | 'polygon' | 'point';
+    centerU: number;
+    centerV: number;
+    radiusU: number;
+    radiusV?: number;
+    arcStart?: number;
+    arcEnd?: number;
+    flatChordAxis?: 'u' | 'v';
+    flatChordVal?: number;
+    keepGreater?: boolean;
+    polygon?: Point2D[];
+  };
+  section1: {
+    kind: 'circle' | 'semicircle' | 'polygon' | 'point';
+    centerU: number;
+    centerV: number;
+    radiusU: number;
+    radiusV?: number;
+    arcStart?: number;
+    arcEnd?: number;
+    flatChordAxis?: 'u' | 'v';
+    flatChordVal?: number;
+    keepGreater?: boolean;
+    polygon?: Point2D[];
+  };
+}
+
+export interface HemisphereCapSpec {
+  flatAxis: 'X' | 'Y' | 'Z';
+  flatCoord: number;
+  keepPositiveSide: boolean; // true if dome extends toward +axis from flatCoord, false if toward -axis
 }
 
 export interface Primitive3D {
@@ -169,8 +207,11 @@ export interface Primitive3D {
   prismPolygon?: Point2D[];
   polygon2D?: Point2D[];
   prismSegments?: LoopCurveSegment2D[];
+  loftSpec?: GeneralizedLoftPayload;
+  hemisphereSpec?: HemisphereCapSpec;
   isInternalFeature?: boolean; // True for holes, slots, blind holes (used in X-Ray mode)
   isInsideLoopContour?: boolean;
+  weldGroup?: string;
 }
 
 export interface ProjectionStep {
@@ -196,8 +237,16 @@ export interface ReconstructedSolution {
   description: string;
   confidence: string;
   primitives3D: Primitive3D[];
-  derivedEntities: CadEntity[]; // Entities for the target view (or all views)
+  derivedEntities: CadEntity[]; // Entities for the target view
   projectionSteps: ProjectionStep[];
+  solverMetrics?: {
+    totalCells: number;
+    occupiedCells: number;
+    unexplainedError: number;
+    phantomError: number;
+    surfaceComplexity: number;
+    solveTimeMs: number;
+  };
 }
 
 export interface DiagnosticFixPayload {
@@ -279,7 +328,7 @@ export interface GradingReport {
 export interface PresetCase {
   id: string;
   name: string;
-  category: 'classic' | 'ambiguous' | 'diagnostic';
+  category: 'classic' | 'ambiguous' | 'diagnostic' | 'benchmark';
   badge: string;
   description: string;
   knownViews: [ViewType, ViewType];

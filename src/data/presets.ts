@@ -1,4 +1,5 @@
 import { PresetCase } from '../types/cad';
+import { getNormalizedBenchmarkPresets } from '../kernel/benchmark/benchmarkCases';
 
 export const PRESET_CASES: PresetCase[] = [
   {
@@ -1750,9 +1751,10 @@ const PRESET_TRANSLATIONS: Record<'en' | 'zh-TW', Record<string, LocalizedCaseTe
 };
 
 export function getLocalizedPresets(lang: 'zh-CN' | 'zh-TW' | 'en'): PresetCase[] {
-  if (lang === 'zh-CN') return PRESET_CASES;
+  const benchmarkPresets = getNormalizedBenchmarkPresets();
+  if (lang === 'zh-CN') return [...PRESET_CASES, ...benchmarkPresets];
   const map = PRESET_TRANSLATIONS[lang];
-  return PRESET_CASES.map((preset) => {
+  const baseLocalized = PRESET_CASES.map((preset) => {
     const loc = map[preset.id];
     if (!loc) return preset;
     return {
@@ -1782,5 +1784,6 @@ export function getLocalizedPresets(lang: 'zh-CN' | 'zh-TW' | 'en'): PresetCase[
       }),
     };
   });
+  return [...baseLocalized, ...benchmarkPresets];
 }
 
