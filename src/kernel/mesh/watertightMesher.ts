@@ -909,10 +909,24 @@ function extendSubtractPrimitiveOpenEnds(
       cu = poly.reduce((s, p) => s + p.u, 0) / poly.length;
       cv = poly.reduce((s, p) => s + p.v, 0) / poly.length;
     }
+    const checkPts2D =
+      poly.length > 0
+        ? [
+            { u: cu, v: cv },
+            ...poly.map((pt) => ({
+              u: cu + (pt.u - cu) * 0.7,
+              v: cv + (pt.v - cv) * 0.7,
+            })),
+          ]
+        : [{ u: cu, v: cv }];
     const wLo = ax === 'X' ? clone.xMin : ax === 'Y' ? clone.yMin : clone.zMin;
     const wHi = ax === 'X' ? clone.xMax : ax === 'Y' ? clone.yMax : clone.zMax;
-    const openLo = isAirOutside(composeFromAxis(ax, cu, cv, wLo - 0.35));
-    const openHi = isAirOutside(composeFromAxis(ax, cu, cv, wHi + 0.35));
+    const openLo = checkPts2D.every((q) =>
+      isAirOutside(composeFromAxis(ax, q.u, q.v, wLo - 0.35))
+    );
+    const openHi = checkPts2D.every((q) =>
+      isAirOutside(composeFromAxis(ax, q.u, q.v, wHi + 0.35))
+    );
     if (ax === 'X') {
       if (openLo) clone.xMin -= ext;
       if (openHi) clone.xMax += ext;
@@ -927,15 +941,47 @@ function extendSubtractPrimitiveOpenEnds(
   }
 
   if (clone.shape === 'box') {
-    const cx = 0.5 * (clone.xMin + clone.xMax);
-    const cy = 0.5 * (clone.yMin + clone.yMax);
-    const cz = 0.5 * (clone.zMin + clone.zMax);
-    if (isAirOutside({ x: clone.xMin - 0.35, y: cy, z: cz })) clone.xMin -= ext;
-    if (isAirOutside({ x: clone.xMax + 0.35, y: cy, z: cz })) clone.xMax += ext;
-    if (isAirOutside({ x: cx, y: clone.yMin - 0.35, z: cz })) clone.yMin -= ext;
-    if (isAirOutside({ x: cx, y: clone.yMax + 0.35, z: cz })) clone.yMax += ext;
-    if (isAirOutside({ x: cx, y: cy, z: clone.zMin - 0.35 })) clone.zMin -= ext;
-    if (isAirOutside({ x: cx, y: cy, z: clone.zMax + 0.35 })) clone.zMax += ext;
+    const orig = { ...clone };
+    const isBoxFacePureAir = (
+      axis: Axis3D,
+      wCoord: number,
+      dirSign: -1 | 1,
+      u0: number,
+      u1: number,
+      v0: number,
+      v1: number
+    ): boolean => {
+      const wTest = wCoord + dirSign * 0.35;
+      for (const fu of [0.15, 0.5, 0.85]) {
+        for (const fv of [0.15, 0.5, 0.85]) {
+          const u = u0 + (u1 - u0) * fu;
+          const v = v0 + (v1 - v0) * fv;
+          if (!isAirOutside(composeFromAxis(axis, u, v, wTest))) {
+            return false;
+          }
+        }
+      }
+      return true;
+    };
+
+    if (isBoxFacePureAir('X', orig.xMin, -1, orig.yMin, orig.yMax, orig.zMin, orig.zMax)) {
+      clone.xMin -= ext;
+    }
+    if (isBoxFacePureAir('X', orig.xMax, 1, orig.yMin, orig.yMax, orig.zMin, orig.zMax)) {
+      clone.xMax += ext;
+    }
+    if (isBoxFacePureAir('Y', orig.yMin, -1, orig.xMin, orig.xMax, orig.zMin, orig.zMax)) {
+      clone.yMin -= ext;
+    }
+    if (isBoxFacePureAir('Y', orig.yMax, 1, orig.xMin, orig.xMax, orig.zMin, orig.zMax)) {
+      clone.yMax += ext;
+    }
+    if (isBoxFacePureAir('Z', orig.zMin, -1, orig.xMin, orig.xMax, orig.yMin, orig.yMax)) {
+      clone.zMin -= ext;
+    }
+    if (isBoxFacePureAir('Z', orig.zMax, 1, orig.xMin, orig.xMax, orig.yMin, orig.yMax)) {
+      clone.zMax += ext;
+    }
   }
 
   return clone;

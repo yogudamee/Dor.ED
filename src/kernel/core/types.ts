@@ -151,6 +151,8 @@ export interface LineCarrier2D {
   isVertical: boolean;
   coordConst?: number; // v for horizontal, u for vertical
   intervals: LineCarrierInterval[];
+  solidIntervals: LineCarrierInterval[];
+  dashedIntervals: LineCarrierInterval[];
   hasSolid: boolean;
   hasDashed: boolean;
   isCoaxialSolidDashed: boolean;
@@ -229,6 +231,7 @@ export interface ViewArrangementResult {
   solidDCEL: PlanarityDCELResult;
   fullDCEL: PlanarityDCELResult;
   regions: CompositeRegion2D[];
+  subFaces: CompositeRegion2D[];
   outerRegions: CompositeRegion2D[];
   innerRegions: CompositeRegion2D[];
   bounds: BoundingBox2D | null;

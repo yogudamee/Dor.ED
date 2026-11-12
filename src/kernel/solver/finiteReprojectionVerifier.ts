@@ -286,10 +286,10 @@ function verifySingleViewFiniteReprojection(
     }
   }
 
-  // Identify subtract primitives whose projected hidden walls violate "无虚线不打假孔"
+  // Identify internal subtract primitives whose projected hidden walls violate "无虚线不打假孔"
   const falseHoleIds: string[] = [];
   for (const vp of primitives) {
-    if (vp.operation !== 'subtract') continue;
+    if (vp.operation !== 'subtract' || vp.isInternalFeature === false) continue;
     const st = voidFeatureStats.get(vp.featureId);
     if (st && st.totalLen > 3.5) {
       const matchRatio = st.matchedLen / st.totalLen;

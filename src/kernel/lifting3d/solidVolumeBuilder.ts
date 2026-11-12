@@ -692,7 +692,39 @@ export function buildCandidateSolidVolumes(
           );
           const fillsRect = Math.abs(sReg.area - bboxArea) / bboxArea <= 0.045;
 
-          if (sReg.profileKind === 'rectangle' || fillsRect) {
+          // Also recognize outer cylinder silhouettes notched by an open central U-slot
+          // (where full-height straight axial generator walls >= 85% of `axialSpan` remain on BOTH `cSpan0` and `cSpan1`,
+          // preventing coaxial stepped cylinder flanges like bench_01 from swallowing narrower upper tiers)!
+          const hasFullHeightStraightWallOn = (targetCoord: number): boolean => {
+            let wallLen = 0;
+            for (const seg of sReg.boundarySegments) {
+              if (seg.kind !== 'line') continue;
+              const cA = sideSharedCoord === 'u' ? seg.p1.u : seg.p1.v;
+              const cB = sideSharedCoord === 'u' ? seg.p2.u : seg.p2.v;
+              const wA = sideSweepCoord === 'u' ? seg.p1.u : seg.p1.v;
+              const wB = sideSweepCoord === 'u' ? seg.p2.u : seg.p2.v;
+              if (
+                Math.abs(cA - targetCoord) <= 0.6 &&
+                Math.abs(cB - targetCoord) <= 0.6
+              ) {
+                wallLen += Math.abs(wB - wA);
+              }
+            }
+            return wallLen >= (wMax - wMin) * 0.85;
+          };
+          const isNotchedOrBeveledCylinderSide =
+            vc.nestingDepth === 0 &&
+            !sReg.isSubDecomposed &&
+            sReg.profileKind !== 'semicircle' &&
+            !isTaperAlongSweep &&
+            hasFullHeightStraightWallOn(cSpan0) &&
+            hasFullHeightStraightWallOn(cSpan1);
+
+          if (
+            sReg.profileKind === 'rectangle' ||
+            fillsRect ||
+            isNotchedOrBeveledCylinderSide
+          ) {
             // Check if a wider concentric solid circle contains `vc` (coaxial stepped shaft!)
             const hasWiderConcentricCircle = solidCircles.some(
               (oc) =>

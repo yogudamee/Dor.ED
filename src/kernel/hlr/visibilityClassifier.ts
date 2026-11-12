@@ -501,9 +501,16 @@ export function classifyEdgesForViewHLR(
       for (const h of hits) {
         const ti = pointToCurveParam(ci, h);
         const tj = pointToCurveParam(cj, h);
-        if (ti !== null && ti > 0.002 && ti < 0.998 && tj !== null && tj > 0.002 && tj < 0.998) {
-          addParam(i, ti);
-          addParam(j, tj);
+        if (
+          ti !== null &&
+          ti >= -0.002 &&
+          ti <= 1.002 &&
+          tj !== null &&
+          tj >= -0.002 &&
+          tj <= 1.002
+        ) {
+          if (ti > 0.002 && ti < 0.998) addParam(i, ti);
+          if (tj > 0.002 && tj < 0.998) addParam(j, tj);
         }
       }
     }
@@ -550,7 +557,7 @@ export function classifyEdgesForViewHLR(
       c.isKnifeEdgeProtected
     );
 
-    if ((vA !== vM || vM !== vB) && depth < 4 && span2d > 0.6) {
+    if ((vA !== vM || vM !== vB) && depth < 6 && span2d > 0.25) {
       const tHalf = 0.5 * (t0 + t1);
       classifySubInterval(c, t0, tHalf, depth + 1);
       classifySubInterval(c, tHalf, t1, depth + 1);

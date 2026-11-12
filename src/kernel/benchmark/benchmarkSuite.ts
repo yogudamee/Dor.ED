@@ -621,6 +621,102 @@ export function getNormalizedBenchmarkPresets(): PresetCase[] {
         rc('b14_t_boss', 'top', 40, 44, 40, 32),
       ],
     },
+
+    // ========================================================================
+    // Case 15: 空心圆筒上下双阶对称铣扁与破孔切口（共享轴积聚性对偶 + 曲面子胞体对偶减法）
+    // ========================================================================
+    {
+      id: 'bench_15_hollow_sleeve_dual_stepped_cuts',
+      name: '基准 15：空心圆筒上下双阶对称铣扁与破孔切口',
+      category: 'benchmark',
+      badge: '高阶基准 · 边缘铣扁与破孔截交',
+      description:
+        '外圆 R=30、同轴内通孔 R=20（高 Z∈[20,80]）在主俯外包络保持完整的前提下，上部 Z∈[60,80] 前后对称浅铣扁（Y≈34.62/85.38，实线弦 X∈[44,76]），下部 Z∈[20,36] 前后深切穿透内孔壁（跨孔分段虚线 Y=48/72，产生四条内外柱面截交母线 X≈32.50, 44, 76, 87.50），检验左视图 12 边形阶梯外框与内孔虚线在 Z=36 处精准截断。',
+      knownViews: ['front', 'top'],
+      targetView: 'left',
+      solutions: [],
+      entities: (() => {
+        const DY_UP = Math.sqrt(30 * 30 - 16 * 16); // sqrt(644) ≈ 25.3772
+        const Y_UP_LO = 60 - DY_UP; // 34.6228
+        const Y_UP_HI = 60 + DY_UP; // 85.3772
+        const DX_LO_OUT = Math.sqrt(30 * 30 - 12 * 12); // sqrt(756) ≈ 27.4955
+        const X_LO_L = 60 - DX_LO_OUT; // 32.5045
+        const X_LO_R = 60 + DX_LO_OUT; // 87.4955
+        return [
+          // Front (u=X, v=Z): Intact outer frame [30..90, 20..80] + R=20 bore dashed X=40,80
+          rc('b15_f_outer', 'front', 30, 20, 60, 60),
+          ln('b15_f_bore_l', 'front', 40, 20, 40, 80, 'thin_dashed'),
+          ln('b15_f_bore_r', 'front', 80, 20, 80, 80, 'thin_dashed'),
+          // Upper flat-milling frame X∈[44,76], Z∈[60,80]
+          ln('b15_f_up_step', 'front', 44, 60, 76, 60),
+          ln('b15_f_up_l', 'front', 44, 60, 44, 80),
+          ln('b15_f_up_r', 'front', 76, 60, 76, 80),
+          // Lower bore-breaching stepped cutout Z=36 + 4 vertical Plane-Cylinder SSI lines
+          ln('b15_f_lo_step', 'front', X_LO_L, 36, X_LO_R, 36),
+          ln('b15_f_lo_out_l', 'front', X_LO_L, 20, X_LO_L, 36),
+          ln('b15_f_lo_in_l', 'front', 44, 20, 44, 36),
+          ln('b15_f_lo_in_r', 'front', 76, 20, 76, 36),
+          ln('b15_f_lo_out_r', 'front', X_LO_R, 20, X_LO_R, 36),
+          ln('b15_f_axis', 'front', 60, 14, 60, 86, 'center_dot_dash'),
+
+          // Top (u=X, v=Y): Intact outer circle R=30 & inner bore R=20
+          cir('b15_t_out', 'top', 60, 60, 30),
+          cir('b15_t_in', 'top', 60, 60, 20),
+          // Upper flat-milling solid chords
+          ln('b15_t_up_b', 'top', 44, Y_UP_LO, 76, Y_UP_LO),
+          ln('b15_t_up_f', 'top', 44, Y_UP_HI, 76, Y_UP_HI),
+          // Lower cutout cross-bore split annular dashed segments at Y=48 & Y=72
+          ln('b15_t_lo_bl', 'top', X_LO_L, 48, 44, 48, 'thin_dashed'),
+          ln('b15_t_lo_br', 'top', 76, 48, X_LO_R, 48, 'thin_dashed'),
+          ln('b15_t_lo_fl', 'top', X_LO_L, 72, 44, 72, 'thin_dashed'),
+          ln('b15_t_lo_fr', 'top', 76, 72, X_LO_R, 72, 'thin_dashed'),
+          ...crosshair('b15_t', 'top', 60, 60, 30),
+        ];
+      })(),
+    },
+
+    // ========================================================================
+    // Case 16: 开放顶槽与底部对称边缘切口复合圆柱（开放 U 槽 + 底部弓形边缘台阶共存）
+    // ========================================================================
+    {
+      id: 'bench_16_slotted_beveled_cylinder_combo',
+      name: '基准 16：开放顶槽与底部对称边缘切口复合圆柱',
+      category: 'benchmark',
+      badge: '高阶基准 · 开放凹槽 + 边缘截切',
+      description:
+        'R=30 圆柱（Z∈[20,80]）顶部带贯穿前后的开放矩形 U 型槽（X∈[52,68], Z∈[56,80]），底部同时具前后对称弓形边缘台阶切口（Y=42/78, Z∈[20,38]，产生截交母线 X=36, 84）。验证开放凹槽与外包络不变的边缘局部截切共存耦合求解。',
+      knownViews: ['front', 'top'],
+      targetView: 'left',
+      solutions: [],
+      entities: (() => {
+        const DY_SLOT = Math.sqrt(30 * 30 - 8 * 8); // sqrt(836) ≈ 28.9137
+        const Y_SLOT_LO = 60 - DY_SLOT;
+        const Y_SLOT_HI = 60 + DY_SLOT;
+        return [
+          // Front (u=X, v=Z): Notched outer U-frame + lower peripheral cutout Z=38, X=36,84
+          ln('b16_f_wl', 'front', 30, 20, 30, 80),
+          ln('b16_f_tl', 'front', 30, 80, 52, 80),
+          ln('b16_f_sl', 'front', 52, 80, 52, 56),
+          ln('b16_f_sf', 'front', 52, 56, 68, 56),
+          ln('b16_f_sr', 'front', 68, 56, 68, 80),
+          ln('b16_f_tr', 'front', 68, 80, 90, 80),
+          ln('b16_f_wr', 'front', 90, 80, 90, 20),
+          ln('b16_f_bot', 'front', 30, 20, 90, 20),
+          ln('b16_f_lo_step', 'front', 36, 38, 84, 38),
+          ln('b16_f_lo_l', 'front', 36, 20, 36, 38),
+          ln('b16_f_lo_r', 'front', 84, 20, 84, 38),
+          ln('b16_f_axis', 'front', 60, 14, 60, 86, 'center_dot_dash'),
+
+          // Top (u=X, v=Y): Intact circle R=30 + vertical slot chords X=52,68 + dashed lower chords Y=42,78
+          cir('b16_t_out', 'top', 60, 60, 30),
+          ln('b16_t_slot_l', 'top', 52, Y_SLOT_LO, 52, Y_SLOT_HI),
+          ln('b16_t_slot_r', 'top', 68, Y_SLOT_LO, 68, Y_SLOT_HI),
+          ln('b16_t_lo_b', 'top', 36, 42, 84, 42, 'thin_dashed'),
+          ln('b16_t_lo_f', 'top', 36, 78, 84, 78, 'thin_dashed'),
+          ...crosshair('b16_t', 'top', 60, 60, 30),
+        ];
+      })(),
+    },
   ];
 
   return cachedBenchmarkPresets;
@@ -707,7 +803,7 @@ export function runKernelBenchmarkSelfTest(): BenchmarkSuiteReport {
           primary.primitives3D,
           arr1,
           arr2,
-          false
+          true
         );
         recallKnownViews = ver.recallKnownViews;
 

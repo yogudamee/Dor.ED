@@ -27,6 +27,7 @@ import { buildCandidateSolidVolumes } from '../lifting3d/solidVolumeBuilder';
 import { buildCandidateVoidChannels } from '../lifting3d/voidChannelBuilder';
 import { traceAllSSICurves3D } from '../ssi/ssiTracer';
 import { verifyReprojectionFiniteIntervals } from './finiteReprojectionVerifier';
+import { solvePeripheralTruncations } from './peripheralCutoutSolver';
 import { coalesceSolidPrimitives } from './volumeCoalescer';
 
 const MAX_CSP_ITERATIONS = 180;
@@ -804,6 +805,29 @@ export function solve2DTo3DVolumeCSP(
     }
   }
 
+  // Peripheral / Chordal Truncation & Bore-Breaching Stepped Cutout Solver:
+  // Solves curved/composite bodies whose outer silhouette remains intact (or slotted) while interior
+  // step lines, chords, and Plane-Quadric SSI lines witness peripheral material removal!
+  let peripheralSubCells = 0;
+  let peripheralRemovedCells = 0;
+  {
+    const periphStart = Date.now();
+    const periphRes = solvePeripheralTruncations(
+      basePrims,
+      baseVer,
+      arr1,
+      arr2,
+      periphStart,
+      450
+    );
+    if (periphRes.accepted) {
+      basePrims = periphRes.primitives;
+      baseVer = periphRes.verification;
+      peripheralSubCells = periphRes.subCellCount;
+      peripheralRemovedCells = periphRes.removedCellCount;
+    }
+  }
+
   const solvedConfigs: CSPSolvedConfiguration[] = [
     {
       id: 'sol_primary_1',
@@ -818,8 +842,12 @@ export function solve2DTo3DVolumeCSP(
       primitives: basePrims,
       verification: baseVer,
       surfaceComplexity: computePrimitiveSurfaceComplexity(basePrims),
-      totalCandidateCells: rawSolidCandidates.length + rawVoidChannels.length,
-      occupiedCellCount: primarySolids.length + activeVoidPrims.length,
+      totalCandidateCells:
+        rawSolidCandidates.length + rawVoidChannels.length + peripheralSubCells,
+      occupiedCellCount:
+        primarySolids.length +
+        activeVoidPrims.length +
+        Math.max(0, peripheralSubCells - peripheralRemovedCells),
     },
   ];
 

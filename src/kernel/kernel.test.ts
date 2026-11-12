@@ -173,9 +173,9 @@ test('No-AABB Hexagonal Prism Law: Regular hexagon lifts to exact prism, not AAB
   );
 });
 
-test('Full 14-Case High-Difficulty Benchmark Self-Test Suite passes 14 / 14', () => {
+test('Full 16-Case High-Difficulty Benchmark Self-Test Suite passes 16 / 16', () => {
   const report = runKernelBenchmarkSelfTest();
-  assert.equal(report.totalCases, 14);
+  assert.equal(report.totalCases, 16);
   for (const r of report.results) {
     assert.equal(
       r.passed,
@@ -183,7 +183,76 @@ test('Full 14-Case High-Difficulty Benchmark Self-Test Suite passes 14 / 14', ()
       `Benchmark ${r.caseId} failed: ${r.notes} (sols=${r.solutionCount}, solid=${r.derivedSolidCount}, dashed=${r.derivedDashedCount}, tris=${r.watertightTriangles}, recall=${r.recallKnownViews})`
     );
   }
-  assert.equal(report.passedCases, 14);
+  assert.equal(report.passedCases, 16);
+});
+
+test('Benchmark #15 Hollow Sleeve Dual Stepped Cutouts: Exact 12-gon Left View & Z=36 Bore Clipping', () => {
+  const presets = getNormalizedBenchmarkPresets();
+  const b15 = presets.find((c) => c.id === 'bench_15_hollow_sleeve_dual_stepped_cuts')!;
+  const sols = deriveFromCustomViews(b15.entities, b15.knownViews, b15.targetView);
+  assert.ok(sols.length >= 1, 'Benchmark #15 must produce at least 1 valid 3D solution');
+
+  const primary = sols[0];
+  // Must retain smooth outer cylinder R=30, inner bore cylinder R=20, plus dual subtractive peripheral cutters!
+  const outerCyl = primary.primitives3D.find(
+    (p) => p.operation === 'add' && p.shape === 'cylinder_z' && Math.abs((p.radius ?? 0) - 30) < 0.5
+  );
+  const innerBore = primary.primitives3D.find(
+    (p) => p.operation === 'subtract' && p.shape === 'cylinder_z' && Math.abs((p.radius ?? 0) - 20) < 0.5
+  );
+  const periphCutters = primary.primitives3D.filter(
+    (p) => p.operation === 'subtract' && p.shape === 'box'
+  );
+  assert.ok(outerCyl, 'Must preserve smooth R=30 outer cylinder base');
+  assert.ok(innerBore, 'Must preserve coaxial R=20 inner through-bore');
+  assert.ok(
+    periphCutters.length >= 4,
+    `Expected 4 dual subtractive peripheral cutters (upper & lower front/back), got ${periphCutters.length}`
+  );
+
+  // Inspect derived Left view (u = Y, v = Z) entities:
+  const leftLines = primary.derivedEntities.filter((e) => e.type === 'line');
+  const leftSolids = leftLines.filter((e) => e.lineType === 'thick_solid');
+  const leftDasheds = leftLines.filter((e) => e.lineType === 'thin_dashed');
+
+  // 1. Verify vertical outer contour walls exist on all 3 Z-tiers:
+  //    Upper [60, 80] at Y ≈ 34.62 & 85.38; Middle [36, 60] at Y = 30 & 90; Lower [20, 36] at Y = 48 & 72
+  const hasVertSolidAt = (targetY: number, zLo: number, zHi: number) =>
+    leftSolids.some((e) => {
+      if (e.type !== 'line') return false;
+      const sameU = Math.abs(e.p1.u - targetY) < 0.6 && Math.abs(e.p2.u - targetY) < 0.6;
+      const vMin = Math.min(e.p1.v, e.p2.v);
+      const vMax = Math.max(e.p1.v, e.p2.v);
+      return sameU && Math.abs(vMin - zLo) < 0.8 && Math.abs(vMax - zHi) < 0.8;
+    });
+
+  const dyUp = Math.sqrt(900 - 256); // 25.3772
+  assert.ok(hasVertSolidAt(60 - dyUp, 60, 80), 'Left view must have upper back flat wall Y≈34.62, Z∈[60,80]');
+  assert.ok(hasVertSolidAt(60 + dyUp, 60, 80), 'Left view must have upper front flat wall Y≈85.38, Z∈[60,80]');
+  assert.ok(hasVertSolidAt(30, 36, 60), 'Left view must have middle back cylinder limb Y=30, Z∈[36,60]');
+  assert.ok(hasVertSolidAt(90, 36, 60), 'Left view must have middle front cylinder limb Y=90, Z∈[36,60]');
+  assert.ok(hasVertSolidAt(48, 20, 36), 'Left view must have lower back step wall Y=48, Z∈[20,36]');
+  assert.ok(hasVertSolidAt(72, 20, 36), 'Left view must have lower front step wall Y=72, Z∈[20,36]');
+
+  // 2. Verify inner bore vertical dashed lines at Y = 40 and Y = 80 are strictly clipped to Z ∈ [36, 80]!
+  const boreDashed40 = leftDasheds.filter(
+    (e) => e.type === 'line' && Math.abs(e.p1.u - 40) < 0.6 && Math.abs(e.p2.u - 40) < 0.6
+  );
+  const boreDashed80 = leftDasheds.filter(
+    (e) => e.type === 'line' && Math.abs(e.p1.u - 80) < 0.6 && Math.abs(e.p2.u - 80) < 0.6
+  );
+  assert.ok(boreDashed40.length >= 1, 'Left view must contain Y=40 bore hidden line on Z∈[36,80]');
+  assert.ok(boreDashed80.length >= 1, 'Left view must contain Y=80 bore hidden line on Z∈[36,80]');
+  for (const e of [...boreDashed40, ...boreDashed80]) {
+    if (e.type !== 'line') continue;
+    const zMin = Math.min(e.p1.v, e.p2.v);
+    const zMax = Math.max(e.p1.v, e.p2.v);
+    assert.ok(
+      zMin >= 35.6,
+      `Inner bore dashed line at Y=${e.p1.u.toFixed(1)} must terminate at step Z=36, got zMin=${zMin.toFixed(2)}`
+    );
+    assert.ok(Math.abs(zMax - 80) < 0.6);
+  }
 });
 
 test('Classic Textbook Presets & GB/T Three-View Diagnostics + Fixes', () => {

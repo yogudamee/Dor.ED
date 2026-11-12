@@ -221,7 +221,60 @@ export function coalesceSolidPrimitives(primitives: Primitive3D[]): Primitive3D[
     return true;
   });
 
-  // 5. Merge identical coaxial subtract cylinders
+  // 5. Merge adjacent coplanar subtract boxes along X, Y, Z (eliminates internal sub-cell seams in peripheral cutouts)
+  let subBoxMerged = true;
+  let subBoxGuard = 0;
+  while (subBoxMerged && subBoxGuard < 64) {
+    subBoxMerged = false;
+    subBoxGuard++;
+    outerSubBox: for (let i = 0; i < subtracts.length; i++) {
+      const a = subtracts[i];
+      if (a.shape !== 'box' || a.loftSpec) continue;
+      for (let j = i + 1; j < subtracts.length; j++) {
+        const b = subtracts[j];
+        if (b.shape !== 'box' || b.loftSpec) continue;
+        if (Boolean(a.isInternalFeature) !== Boolean(b.isInternalFeature)) continue;
+
+        if (
+          sameInterval(a.yMin, a.yMax, b.yMin, b.yMax) &&
+          sameInterval(a.zMin, a.zMax, b.zMin, b.zMax) &&
+          Math.max(a.xMin, b.xMin) <= Math.min(a.xMax, b.xMax) + COPLANAR_TOL
+        ) {
+          a.xMin = Math.min(a.xMin, b.xMin);
+          a.xMax = Math.max(a.xMax, b.xMax);
+          subtracts.splice(j, 1);
+          subBoxMerged = true;
+          break outerSubBox;
+        }
+
+        if (
+          sameInterval(a.xMin, a.xMax, b.xMin, b.xMax) &&
+          sameInterval(a.zMin, a.zMax, b.zMin, b.zMax) &&
+          Math.max(a.yMin, b.yMin) <= Math.min(a.yMax, b.yMax) + COPLANAR_TOL
+        ) {
+          a.yMin = Math.min(a.yMin, b.yMin);
+          a.yMax = Math.max(a.yMax, b.yMax);
+          subtracts.splice(j, 1);
+          subBoxMerged = true;
+          break outerSubBox;
+        }
+
+        if (
+          sameInterval(a.xMin, a.xMax, b.xMin, b.xMax) &&
+          sameInterval(a.yMin, a.yMax, b.yMin, b.yMax) &&
+          Math.max(a.zMin, b.zMin) <= Math.min(a.zMax, b.zMax) + COPLANAR_TOL
+        ) {
+          a.zMin = Math.min(a.zMin, b.zMin);
+          a.zMax = Math.max(a.zMax, b.zMax);
+          subtracts.splice(j, 1);
+          subBoxMerged = true;
+          break outerSubBox;
+        }
+      }
+    }
+  }
+
+  // 6. Merge identical coaxial subtract cylinders
   let subMerged = true;
   let subGuard = 0;
   while (subMerged && subGuard < 32) {
@@ -276,5 +329,26 @@ export function coalesceSolidPrimitives(primitives: Primitive3D[]): Primitive3D[
     }
   }
 
-  return [...keptPositives, ...intersects, ...subtracts];
+  // 7. Prune any subtract box 100% contained inside another subtract box
+  const keptSubtracts = subtracts.filter((cand, idx) => {
+    if (cand.shape !== 'box' || cand.loftSpec) return true;
+    for (let j = 0; j < subtracts.length; j++) {
+      if (j === idx) continue;
+      const other = subtracts[j];
+      if (other.shape !== 'box' || other.loftSpec) continue;
+      if (
+        other.xMin <= cand.xMin + COPLANAR_TOL &&
+        other.xMax >= cand.xMax - COPLANAR_TOL &&
+        other.yMin <= cand.yMin + COPLANAR_TOL &&
+        other.yMax >= cand.yMax - COPLANAR_TOL &&
+        other.zMin <= cand.zMin + COPLANAR_TOL &&
+        other.zMax >= cand.zMax - COPLANAR_TOL
+      ) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  return [...keptPositives, ...intersects, ...keptSubtracts];
 }

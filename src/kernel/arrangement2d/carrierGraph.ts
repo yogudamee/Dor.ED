@@ -52,6 +52,40 @@ export function buildViewArrangementAndCarriers(
     view
   );
 
+  // Build solid+dashed cutting sub-face decomposition (`subFaces`):
+  // Bridge cross-void collinear cutting carriers (e.g. annular dashed lines split across a central bore)
+  // across `[pStart, pEnd]` so peripheral circular lunes, annular strips, and stepped sub-faces are cleanly extracted!
+  const bridgedCuttingEntities: CadEntity[] = entities.filter(
+    (e) => e.view === view
+  );
+  const extraBridgeLines: CadEntity[] = [];
+  for (const lc of lineCarriers) {
+    if (lc.intervals.length >= 2 && dist2(lc.pStart, lc.pEnd) > 2.0) {
+      extraBridgeLines.push({
+        id: `bridge_${lc.id}`,
+        view,
+        type: 'line',
+        lineType: lc.hasSolid ? 'thick_solid' : 'thin_dashed',
+        p1: { ...lc.pStart },
+        p2: { ...lc.pEnd },
+        source: 'derived',
+      });
+    }
+  }
+  const subFaceDCEL =
+    extraBridgeLines.length > 0
+      ? buildPlanarDCEL(
+          preprocessAndSplitView(
+            [...bridgedCuttingEntities, ...extraBridgeLines],
+            view,
+            false
+          ).segments
+        )
+      : fullDCEL;
+  const subFaces = extractCompositeRegionsFromDCEL(subFaceDCEL, view).regions.filter(
+    (r) => !r.isSharedChordUnion
+  );
+
   // Fallback global bounds if view has circles/segments
   let globalBounds = solidBounds;
   if (fullPrep.segments.length > 0) {
@@ -107,6 +141,7 @@ export function buildViewArrangementAndCarriers(
     solidDCEL,
     fullDCEL,
     regions,
+    subFaces,
     outerRegions,
     innerRegions,
     bounds: globalBounds,
@@ -116,6 +151,32 @@ export function buildViewArrangementAndCarriers(
     taperedDashedBands: taperedBands,
     openNotches,
   };
+}
+
+const COS_ONE_DEG = Math.cos(Math.PI / 180); // ~0.9998477 (angle deviation <= 1.0°)
+const CARRIER_NORMAL_TOL_MM = 0.8;
+
+function mergeSameTypeCarrierIntervals(
+  raw: LineCarrierInterval[]
+): LineCarrierInterval[] {
+  const sorted = [...raw].sort((a, b) => a.s0 - b.s0);
+  const merged: LineCarrierInterval[] = [];
+  for (const iv of sorted) {
+    if (merged.length === 0) {
+      merged.push({ ...iv, p1: { ...iv.p1 }, p2: { ...iv.p2 } });
+      continue;
+    }
+    const prev = merged[merged.length - 1];
+    if (prev.lineType === iv.lineType && iv.s0 <= prev.s1 + 0.35) {
+      if (iv.s1 > prev.s1) {
+        prev.s1 = iv.s1;
+        prev.p2 = { ...iv.p2 };
+      }
+    } else {
+      merged.push({ ...iv, p1: { ...iv.p1 }, p2: { ...iv.p2 } });
+    }
+  }
+  return merged;
 }
 
 function extractLineCarriers(
@@ -139,24 +200,32 @@ function extractLineCarriers(
       dirV = -dirV;
     }
 
-    // Try matching existing carrier (angle < 0.9 deg, perpendicular offset < 0.35mm)
+    // Match existing collinear analytical carrier (angle <= 1.0°, perpendicular distance <= 0.8mm),
+    // stitching segments separated across central holes, bosses, or centerlines!
     let matched: LineCarrier2D | null = null;
     for (const c of carriers) {
       const dot = Math.abs(c.dir.u * dirU + c.dir.v * dirV);
-      if (dot < 0.99985) continue;
-      const perpDist = Math.abs(
+      if (dot < COS_ONE_DEG) continue;
+      const perpDist1 = Math.abs(
         (seg.p1.u - c.origin.u) * c.normal.u +
           (seg.p1.v - c.origin.v) * c.normal.v
       );
-      if (perpDist <= 0.35) {
+      const perpDist2 = Math.abs(
+        (seg.p2.u - c.origin.u) * c.normal.u +
+          (seg.p2.v - c.origin.v) * c.normal.v
+      );
+      if (
+        perpDist1 <= CARRIER_NORMAL_TOL_MM &&
+        perpDist2 <= CARRIER_NORMAL_TOL_MM
+      ) {
         matched = c;
         break;
       }
     }
 
     if (!matched) {
-      const isHoriz = Math.abs(dirV) < 0.012;
-      const isVert = Math.abs(dirU) < 0.012;
+      const isHoriz = Math.abs(dirV) < 0.0175;
+      const isVert = Math.abs(dirU) < 0.0175;
       if (isHoriz) {
         dirU = 1;
         dirV = 0;
@@ -177,8 +246,14 @@ function extractLineCarriers(
         pEnd: { ...seg.p2 },
         isHorizontal: isHoriz,
         isVertical: isVert,
-        coordConst: isHoriz ? seg.p1.v : isVert ? seg.p1.u : undefined,
+        coordConst: isHoriz
+          ? 0.5 * (seg.p1.v + seg.p2.v)
+          : isVert
+          ? 0.5 * (seg.p1.u + seg.p2.u)
+          : undefined,
         intervals: [],
+        solidIntervals: [],
+        dashedIntervals: [],
         hasSolid: false,
         hasDashed: false,
         isCoaxialSolidDashed: false,
@@ -209,30 +284,38 @@ function extractLineCarriers(
     if (seg.lineType === 'thin_dashed') matched.hasDashed = true;
   }
 
-  // Sort & merge contiguous same-linetype intervals on each carrier
+  // Sort & merge contiguous same-linetype intervals on each carrier while preserving separate cross-void spans!
   for (const c of carriers) {
-    c.intervals.sort((a, b) => a.s0 - b.s0);
-    const merged: LineCarrierInterval[] = [];
-    for (const iv of c.intervals) {
-      if (merged.length === 0) {
-        merged.push({ ...iv });
-        continue;
+    c.solidIntervals = mergeSameTypeCarrierIntervals(
+      c.intervals.filter((iv) => iv.lineType === 'thick_solid')
+    );
+    c.dashedIntervals = mergeSameTypeCarrierIntervals(
+      c.intervals.filter((iv) => iv.lineType === 'thin_dashed')
+    );
+    c.intervals = mergeSameTypeCarrierIntervals(c.intervals);
+    c.sMin = c.intervals[0].s0;
+    c.sMax = c.intervals[c.intervals.length - 1].s1;
+    c.pStart = { ...c.intervals[0].p1 };
+    c.pEnd = { ...c.intervals[c.intervals.length - 1].p2 };
+    if (c.isHorizontal) {
+      let sumW = 0;
+      let sumWV = 0;
+      for (const iv of c.intervals) {
+        const w = Math.max(0.1, iv.s1 - iv.s0);
+        sumW += w;
+        sumWV += w * 0.5 * (iv.p1.v + iv.p2.v);
       }
-      const prev = merged[merged.length - 1];
-      if (prev.lineType === iv.lineType && iv.s0 <= prev.s1 + 0.35) {
-        if (iv.s1 > prev.s1) {
-          prev.s1 = iv.s1;
-          prev.p2 = { ...iv.p2 };
-        }
-      } else {
-        merged.push({ ...iv });
+      if (sumW > 0) c.coordConst = sumWV / sumW;
+    } else if (c.isVertical) {
+      let sumW = 0;
+      let sumWU = 0;
+      for (const iv of c.intervals) {
+        const w = Math.max(0.1, iv.s1 - iv.s0);
+        sumW += w;
+        sumWU += w * 0.5 * (iv.p1.u + iv.p2.u);
       }
+      if (sumW > 0) c.coordConst = sumWU / sumW;
     }
-    c.intervals = merged;
-    c.sMin = merged[0].s0;
-    c.sMax = merged[merged.length - 1].s1;
-    c.pStart = { ...merged[0].p1 };
-    c.pEnd = { ...merged[merged.length - 1].p2 };
     c.isCoaxialSolidDashed = c.hasSolid && c.hasDashed;
   }
 

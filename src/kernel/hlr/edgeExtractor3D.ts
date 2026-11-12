@@ -236,6 +236,85 @@ function makeSubSeg(
 }
 
 /**
+ * Clip a `subtract` `box` or `prism` straight edge strictly to intervals that lie on the active
+ * composite CSG solid boundary (`|SDF_csg| <= 0.11` with adjacent solid material in 26-neighborhood).
+ * Eliminates exterior `+1.5mm` air-extension edges AND trims hidden step lines across internal bores!
+ */
+function clipSubtractEdgeToCSGBoundary(
+  p0: Vec3,
+  p1: Vec3,
+  prim: Primitive3D,
+  allPrimitives: Primitive3D[]
+): Seg3D[] {
+  const totalLen = dist3(p0, p1);
+  if (totalLen < 0.15) return [];
+
+  const isOnActiveBoundary = (t: number): boolean => {
+    const pt = {
+      x: p0.x + (p1.x - p0.x) * t,
+      y: p0.y + (p1.y - p0.y) * t,
+      z: p0.z + (p1.z - p0.z) * t,
+    };
+    if (Math.abs(evalCSGSolidSDF(pt, allPrimitives)) > 0.11) return false;
+    return hasSolidIn26Neighborhood(pt, allPrimitives, 0.2);
+  };
+
+  const refine = (tA: number, tB: number, target: boolean): number => {
+    let lo = tA;
+    let hi = tB;
+    for (let k = 0; k < 6; k++) {
+      const mid = 0.5 * (lo + hi);
+      if (isOnActiveBoundary(mid) === target) hi = mid;
+      else lo = mid;
+    }
+    return 0.5 * (lo + hi);
+  };
+
+  const N = Math.max(28, Math.ceil(totalLen / 0.9));
+  const out: Seg3D[] = [];
+  let inSpan = false;
+  let tStart = 0;
+
+  const pushInterval = (ta: number, tb: number) => {
+    if ((tb - ta) * totalLen <= 0.25) return;
+    out.push({
+      p1: {
+        x: p0.x + (p1.x - p0.x) * ta,
+        y: p0.y + (p1.y - p0.y) * ta,
+        z: p0.z + (p1.z - p0.z) * ta,
+      },
+      p2: {
+        x: p0.x + (p1.x - p0.x) * tb,
+        y: p0.y + (p1.y - p0.y) * tb,
+        z: p0.z + (p1.z - p0.z) * tb,
+      },
+      ownerOp: 'subtract',
+      ownerId: prim.id,
+      featureId: prim.featureId,
+      featureLabel: prim.label,
+      forceHidden: false,
+    });
+  };
+
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const act = isOnActiveBoundary(t);
+    if (act && !inSpan) {
+      tStart = i === 0 ? 0 : refine((i - 1) / N, t, true);
+      inSpan = true;
+    } else if (!act && inSpan) {
+      const tEnd = refine((i - 1) / N, t, false);
+      pushInterval(tStart, tEnd);
+      inSpan = false;
+    }
+  }
+  if (inSpan) {
+    pushInterval(tStart, 1);
+  }
+  return out;
+}
+
+/**
  * Extract all 3D sharp crease edges, annular step shoulder full contours, exact view-dependent
  * extreme silhouette generators, and 3D SSI intersection curves for a composite CSG solid!
  */
@@ -685,12 +764,16 @@ function extractPrismEdges3D(
 
   const poly = prim.prismPolygon ?? prim.polygon2D ?? [];
   const n = poly.length;
+  const clipFn =
+    prim.operation === 'subtract'
+      ? clipSubtractEdgeToCSGBoundary
+      : clipGeneratorSegmentToActiveIntervals;
   for (let i = 0; i < n; i++) {
     const pA = poly[i];
     const pB = poly[(i + 1) % n];
     for (const wVal of [w0, w1]) {
       segments.push(
-        ...clipGeneratorSegmentToActiveIntervals(
+        ...clipFn(
           composeFromAxis(axis, pA.u, pA.v, wVal),
           composeFromAxis(axis, pB.u, pB.v, wVal),
           prim,
@@ -699,7 +782,7 @@ function extractPrismEdges3D(
       );
     }
     segments.push(
-      ...clipGeneratorSegmentToActiveIntervals(
+      ...clipFn(
         composeFromAxis(axis, pA.u, pA.v, w0),
         composeFromAxis(axis, pA.u, pA.v, w1),
         prim,
@@ -853,19 +936,9 @@ function extractBoxEdges3D(
   ];
   for (const [i, j] of pairs) {
     if (prim.operation === 'subtract') {
-      // For a subtract box (rectangular hole or open U-slot!), an edge can be EITHER:
-      // - On an open slot surface (visible crease where slot cuts solid exterior -> forceHidden = false!), OR
-      // - Strictly buried inside the solid body (internal square bore corner -> HLR ray-casting automatically classifies as hidden!).
-      // So we do NOT lock subtract box edges to forceHidden; we simply clip them to intervals on the CSG boundary (`|SDF_csg| <= 0.12`)!
-      segments.push({
-        p1: c[i],
-        p2: c[j],
-        ownerOp: 'subtract',
-        ownerId: prim.id,
-        featureId: prim.featureId,
-        featureLabel: prim.label,
-        forceHidden: false,
-      });
+      segments.push(
+        ...clipSubtractEdgeToCSGBoundary(c[i], c[j], prim, allPrimitives)
+      );
     } else {
       segments.push(
         ...clipGeneratorSegmentToActiveIntervals(c[i], c[j], prim, allPrimitives)
